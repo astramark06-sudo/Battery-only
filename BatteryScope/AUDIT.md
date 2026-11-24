@@ -1,5 +1,11 @@
 # BatteryScope 1.15 — Measurement and implementation audit
 
+## 2026-11-25 — Conservative boot and permission-aware endpoint correlation (R30 partial)
+
+- R30: rate eligibility now requires a nonnegative known matching boot count at both endpoints. Older unknown-boot records remain in raw storage/exports and gap counts, but are excluded from rate/session estimates. Summary counts unknown-identity intervals explicitly. App correlation now additionally requires recorded Usage Access at both endpoints; live recorder checks permission before and after the usage query and does not store a package when access is unavailable.
+- Labels clarify that matching screen/app endpoints do not prove uninterrupted state between observations. Exact event-based reconstruction, durable usage watermark and permission lifecycle/device tests remain pending (R18/R30).
+- Independent Kotlin harness passed 459 checks of exact RecorderTimeMath helper (blob 20ef864be7951aaaee67263445aed7cdc5d6fd59), covering boot/duration boundaries, screen/access/package combinations and prior clock rules. Updated JVM tests and disposable Android regression for raw history retained, unknown-boot exclusion and denied-access correlation. Latest cumulative Android CI required. No schema, version, signing, permissions or existing-history changes; keep draft.
+ 
 ## 2026-11-25 — Root-aware kernel presentation, candidate freshness and display compatibility (R27/R28/R34/R35 partial)
 
 - Prior staging recovery head `a3247fa7e2f2969b86a11be0597bdacae394209d`: Android build/JVM and emulator instrumentation test steps succeeded in [run 45479251876](https://github.com/astramark06-sudo/Battery-only/actions/runs/45479251876); signing policy succeeded.

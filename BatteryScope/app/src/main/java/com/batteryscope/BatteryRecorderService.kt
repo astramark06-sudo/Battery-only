@@ -373,7 +373,13 @@ class BatteryRecorderService : Service() {
             lastVoltageMeasurementQuality = voltageQuality
         }
         val screenOn = (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
-        val activeApp = updateForegroundPackage(now)
+        val accessBefore = hasUsageAccess()
+        val activeApp = updateForegroundPackage(now, accessBefore)
+        val usageAccess = accessBefore && hasUsageAccess()
+        if (!usageAccess) {
+            foregroundPackage = null
+            lastUsageQueryMs = 0L
+        }
         val inventoryJson = inventory?.let {
             JSONObject(it.value)
                 .put("@inventory_request_started_elapsed_ms", it.startedElapsedMs)
@@ -413,8 +419,8 @@ class BatteryRecorderService : Service() {
             put("battery_health", health)
             put("technology", intent?.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY) ?: "NOT_REPORTED")
             put("screen_on", if (screenOn) 1 else 0)
-            put("foreground_package", activeApp ?: "")
-            put("usage_access", if (hasUsageAccess()) 1 else 0)
+            put("foreground_package", if (usageAccess) activeApp ?: "" else "")
+            put("usage_access", if (usageAccess) 1 else 0)
             if (inventoryJson != null) {
                 inventoryJson.put("@recorder/sample_collection_finished_elapsed_ms", SystemClock.elapsedRealtime())
                 put("power_supply_json", inventoryJson.toString())
@@ -467,8 +473,8 @@ class BatteryRecorderService : Service() {
         mode == AppOpsManager.MODE_ALLOWED
     } catch (_: Throwable) { false }
 
-    private fun updateForegroundPackage(now: Long): String? {
-        if (!hasUsageAccess()) {
+    private fun updateForegroundPackage(now: Long, access: Boolean): String? {
+        if (!access) {
             if (foregroundPackage != null) event("USAGE_ACCESS_REVOKED", "Usage Access unavailable; clearing previous foreground app attribution")
             foregroundPackage = null
             lastUsageQueryMs = 0L
@@ -838,7 +844,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             appendLine("Stored samples: " + total + " • target sample interval: 30 seconds")
             appendLine("Report excludes samples dated after its reference time; original records remain stored.")
             if (latestReading != null) appendLine("Last eligible battery level sample age: " + durationText(now - latestReading.second))
-            appendLine("App foreground correlation is not a direct per-app electrical measurement.")
+            appendLine("App and screen correlation uses matching sampled endpoints, not proof of continuous occupancy or a direct per-app electrical measurement. App correlation also requires Usage Access at both endpoints.")
             appendLine("Counter-derived averages may reflect coarse gauge steps (45,000 µAh observed on RMX2161), not instantaneous current. Implausible counter values and interval jumps are excluded from interval averages; raw readings are retained.")
             for ((index, window) in windows.withIndex()) {
                 val label = window.first
@@ -890,7 +896,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             appendLine("=== RECENT DISCHARGING SESSIONS (LAST 30 DAYS) ===")
             appendLine(sessionHistoryReport(recent.discharging, recent.hasSamples, false))
             appendLine()
-            appendLine("Rate intervals outside 1–90 seconds and known reboot boundaries are excluded. Screen-state rates omit mixed-state endpoints; counter rates use valid counter intervals only. Threshold times are resolved to the sample interval, not exact hardware event times.")
+            appendLine("Rates require 1–90 seconds and a known shared boot identity; unknown/reboot intervals remain stored but are excluded from rates. Screen-state rates omit mixed-state endpoints; counter rates use valid counter intervals only. Threshold times are resolved to the sample interval, not exact hardware event times.")
             val last = readableDatabase.rawQuery(
                 "SELECT timestamp_ms,battery_percent,battery_status,plug_type,foreground_package FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id DESC LIMIT 1",
                 windowArgs(0L, now, range)
@@ -906,7 +912,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
 
     private data class Row(
         val time: Long, val elapsed: Long, val pct: Int?, val state: String, val plug: String,
-        val chargeCounter: Long?, val screen: Boolean, val app: String, val bootCount: Int?
+        val chargeCounter: Long?, val screen: Boolean, val app: String, val bootCount: Int?, val usageAccess: Boolean
     )
     private data class AppMetric(
         val name: String,
@@ -952,7 +958,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         val discharging = SessionCollector(false, 8)
         var hasSamples = false
         readableDatabase.rawQuery(
-            "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count FROM samples INDEXED BY idx_samples_time WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id",
+            "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count,usage_access FROM samples INDEXED BY idx_samples_time WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id",
             windowArgs(from, now, range)
         ).use { c ->
             while (c.moveToNext()) {
@@ -961,7 +967,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                     c.getLong(0), c.getLong(1), if (c.isNull(2)) null else c.getInt(2),
                     c.getString(3) ?: "UNKNOWN", c.getString(4) ?: "NONE",
                     if (c.isNull(5)) null else c.getLong(5), c.getInt(6) == 1, c.getString(7) ?: "",
-                    if (c.isNull(8)) null else c.getInt(8)
+                    if (c.isNull(8)) null else c.getInt(8), c.getInt(9) == 1
                 )
                 charging.accept(row)
                 discharging.accept(row)
@@ -999,7 +1005,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             WindowAccumulator(from, now, index != starts.lastIndex)
         }
         readableDatabase.rawQuery(
-            """SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count
+            """SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count,usage_access
                FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id""".trimIndent(),
             windowArgs(starts.minOrNull() ?: 0L, now, range)
         ).use { cursor ->
@@ -1012,6 +1018,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             val iScreen = cursor.getColumnIndexOrThrow("screen_on")
             val iApp = cursor.getColumnIndexOrThrow("foreground_package")
             val iBootCount = cursor.getColumnIndexOrThrow("boot_count")
+            val iUsageAccess = cursor.getColumnIndexOrThrow("usage_access")
             while (cursor.moveToNext()) {
                 val after = Row(
                     cursor.getLong(iTime),
@@ -1022,7 +1029,8 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                     if (cursor.isNull(iCounter)) null else cursor.getLong(iCounter),
                     cursor.getInt(iScreen) == 1,
                     cursor.getString(iApp) ?: "",
-                    if (cursor.isNull(iBootCount)) null else cursor.getInt(iBootCount)
+                    if (cursor.isNull(iBootCount)) null else cursor.getInt(iBootCount),
+                    cursor.getInt(iUsageAccess) == 1
                 )
                 for (accumulator in accumulators) accumulator.accept(after)
             }
@@ -1049,6 +1057,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         var count = 0
         var screenOn = 0
         var screenOff = 0
+        var unknownBootIntervals = 0L
         var previous: Row? = null
         var earliestWall: Long? = null
         var latestWall: Long? = null
@@ -1065,9 +1074,11 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 val dt = sampleIntervalMs(before, after)
                 val eligible = isRateInterval(before, after, dt)
                 val knownReboot = before.bootCount != null && after.bootCount != null && before.bootCount != after.bootCount
+                if (before.bootCount == null || after.bootCount == null || before.bootCount < 0 || after.bootCount < 0) unknownBootIntervals++
                 gap.accept(dt, eligible, knownReboot)
                 if (eligible) {
-                    val sameApp = RecorderTimeMath.sameForegroundApp(before.screen, after.screen, before.app, after.app)
+                    val sameApp = RecorderTimeMath.sameForegroundApp(before.screen, after.screen, before.app, after.app,
+                        before.usageAccess, after.usageAccess)
                     if (sameApp) appTime[after.app] = (appTime[after.app] ?: 0L) + dt
                     if (before.pct != null && after.pct != null) {
                         val delta = (after.pct - before.pct).toDouble()
@@ -1144,7 +1155,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                     " • longest long gap " + durationText(gap.longestMs) + " • average positive interval " +
                     (gap.averageMs?.let { "$it ms" } ?: "n/a") +
                     " • " + gap.intervalsAtLeastDoubleTarget + " intervals >=60s • " + gap.invalidRateIntervals +
-                    " rate-ineligible intervals (" + gap.nonPositiveIntervals + " nonpositive; " + gap.knownReboots + " known reboots)" +
+                    " rate-ineligible intervals (" + gap.nonPositiveIntervals + " nonpositive; " + gap.knownReboots + " known reboots; " + unknownBootIntervals + " unknown boot identity)" +
                     " • rate-eligible adjacent interval duration " + (gap.validIntervalMs / 1000L) + "s • " + edges +
                     " (not a continuous coverage percentage; edge times use wall timestamps; gap causes unknown)",
                 "charge " + (charge.counter.observedMs / 1000L) + "s accepted of " + (charge.ms / 1000L) +

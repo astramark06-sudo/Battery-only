@@ -269,6 +269,27 @@ class RecorderDatabaseAndroidTest {
         assertEquals(2L,number(db.readableDatabase,"SELECT COUNT(*) FROM samples"))
     }
 
+    @Test fun historyRatesRequireKnownBootAndAppCorrelationRequiresAccess() = database { db ->
+        val start = 2_000_000_000_000L
+        for (i in 0..4) sample(db,start + i*30_000L,100_000L + i*30_000L,90-i)
+        val sql = db.writableDatabase
+        sql.execSQL("UPDATE samples SET screen_on=1,foreground_package='test.example',usage_access=1")
+        sql.execSQL("UPDATE samples SET usage_access=0 WHERE timestamp_ms=?",arrayOf(start+30_000L))
+        sql.execSQL("UPDATE samples SET boot_count=NULL WHERE timestamp_ms=?",arrayOf(start+90_000L))
+        val report = db.historySummary(start+120_000L)
+        val day = report.substringAfter("=== 24 HOURS • ").substringBefore("\n===")
+        assertTrue(day.startsWith("5 samples ==="))
+        assertTrue(day.contains("rate-eligible adjacent interval duration 60s"))
+        assertTrue(day.contains("2 unknown boot identity"))
+        assertTrue(day.contains("Discharging: 0.02 h • -2.00 percentage points"))
+        assertFalse(day.contains("test.example:"))
+        assertEquals(5L,number(db.readableDatabase,"SELECT COUNT(*) FROM samples"))
+        sql.execSQL("UPDATE samples SET usage_access=1 WHERE timestamp_ms=?",arrayOf(start+30_000L))
+        val allowed = db.historySummary(start+120_000L).substringAfter("=== 24 HOURS • ").substringBefore("\n===")
+        assertTrue(allowed.contains("test.example:"))
+        assertTrue(allowed.contains("rate-eligible adjacent interval duration 60s"))
+    }
+
     @Test fun actualAndroidOpenHelperMigratesV4WithoutDroppingRawRecords() {
         val name = name()
         try {

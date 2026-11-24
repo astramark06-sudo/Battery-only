@@ -11,16 +11,21 @@ class RecorderTimeMathTest {
         org.junit.Assert.assertFalse(RecorderTimeMath.isRateInterval(999L, 7, 7))
         org.junit.Assert.assertFalse(RecorderTimeMath.isRateInterval(90_001L, 7, 7))
         org.junit.Assert.assertFalse(RecorderTimeMath.isRateInterval(30_000L, 7, 8))
-        org.junit.Assert.assertTrue(RecorderTimeMath.isRateInterval(30_000L, null, 7))
+        org.junit.Assert.assertFalse(RecorderTimeMath.isRateInterval(30_000L, null, 7))
+        org.junit.Assert.assertFalse(RecorderTimeMath.isRateInterval(30_000L, 7, null))
+        org.junit.Assert.assertFalse(RecorderTimeMath.isRateInterval(30_000L, null, null))
+        org.junit.Assert.assertFalse(RecorderTimeMath.isRateInterval(30_000L, -1, -1))
     }
 
     @Test
     fun appCorrelationRequiresTwoInteractiveMatchingEndpoints() {
-        org.junit.Assert.assertTrue(RecorderTimeMath.sameForegroundApp(true, true, "app.a", "app.a"))
-        org.junit.Assert.assertFalse(RecorderTimeMath.sameForegroundApp(false, true, "app.a", "app.a"))
-        org.junit.Assert.assertFalse(RecorderTimeMath.sameForegroundApp(true, false, "app.a", "app.a"))
-        org.junit.Assert.assertFalse(RecorderTimeMath.sameForegroundApp(true, true, "app.a", "app.b"))
-        org.junit.Assert.assertFalse(RecorderTimeMath.sameForegroundApp(true, true, "", ""))
+        org.junit.Assert.assertTrue(RecorderTimeMath.sameForegroundApp(true, true, "app.a", "app.a", true, true))
+        org.junit.Assert.assertFalse(RecorderTimeMath.sameForegroundApp(false, true, "app.a", "app.a", true, true))
+        org.junit.Assert.assertFalse(RecorderTimeMath.sameForegroundApp(true, false, "app.a", "app.a", true, true))
+        org.junit.Assert.assertFalse(RecorderTimeMath.sameForegroundApp(true, true, "app.a", "app.b", true, true))
+        org.junit.Assert.assertFalse(RecorderTimeMath.sameForegroundApp(true, true, "", "", true, true))
+        org.junit.Assert.assertFalse(RecorderTimeMath.sameForegroundApp(true, true, "app.a", "app.a", false, true))
+        org.junit.Assert.assertFalse(RecorderTimeMath.sameForegroundApp(true, true, "app.a", "app.a", true, false))
     }
 
     @Test
