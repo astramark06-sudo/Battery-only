@@ -636,11 +636,12 @@ class RecorderDatabase(context: Context) :
         val samples = mutableListOf<CapacitySample>()
         val from = nowMs - 90L * 24L * 60L * 60L * 1000L
         readableDatabase.rawQuery(
-            """SELECT timestamp_ms,boot_count,battery_percent,battery_status,plug_type,charge_counter_uah
+            """SELECT timestamp_ms,elapsed_realtime_ms,boot_count,battery_percent,battery_status,plug_type,charge_counter_uah
                FROM samples WHERE timestamp_ms>=? ORDER BY timestamp_ms""".trimIndent(),
             arrayOf(from.toString())
         ).use { cursor ->
             val time = cursor.getColumnIndexOrThrow("timestamp_ms")
+            val elapsed = cursor.getColumnIndexOrThrow("elapsed_realtime_ms")
             val boot = cursor.getColumnIndexOrThrow("boot_count")
             val percent = cursor.getColumnIndexOrThrow("battery_percent")
             val status = cursor.getColumnIndexOrThrow("battery_status")
@@ -653,7 +654,8 @@ class RecorderDatabase(context: Context) :
                     percent = if (cursor.isNull(percent)) null else cursor.getInt(percent),
                     status = cursor.getString(status) ?: "UNKNOWN",
                     plug = cursor.getString(plug) ?: "NONE",
-                    chargeCounterUah = if (cursor.isNull(counter)) null else cursor.getLong(counter)
+                    chargeCounterUah = if (cursor.isNull(counter)) null else cursor.getLong(counter),
+                    elapsedRealtimeMs = cursor.getLong(elapsed)
                 )
             }
         }
@@ -668,31 +670,26 @@ class RecorderDatabase(context: Context) :
                 appendLine("No hardware-tree sample recorded yet. Start the recorder and wait for its first 120-second hardware inventory.")
             } else {
                 val json = try { JSONObject(latestHardwareJson) } catch (_: Throwable) { JSONObject() }
-                fun findField(name: String): Pair<String, String>? {
-                    val keys = json.keys()
-                    while (keys.hasNext()) {
-                        val key = keys.next()
-                        if (key.startsWith("power_supply/") && key.endsWith("/" + name)) {
-                            return key to json.optString(key)
-                        }
-                    }
-                    return null
-                }
-                val full = findField("charge_full")
-                val design = findField("charge_full_design")
-                val cycles = findField("cycle_count")
-                val fullUah = full?.second?.toLongOrNull()?.takeIf { it > 0L }
-                val designUah = design?.second?.toLongOrNull()?.takeIf { it > 0L }
+                val fields = json.keys().asSequence().associateWith { json.optString(it) }
+                val gauge = KernelGauge.select(fields, "power_supply/")
+                fun field(name: String, value: String?): Pair<String, String>? =
+                    if (gauge == null || value == null) null else (gauge.source + "/" + name) to value
+                val full = field("charge_full", gauge?.fullRaw)
+                val design = field("charge_full_design", gauge?.designRaw)
+                val cycles = field("cycle_count", gauge?.cyclesRaw)
+                val fullUah = gauge?.fullUah
+                val designUah = gauge?.designUah
                 if (fullUah != null) appendLine("Kernel full-charge capacity: ${String.format(Locale.US, "%.1f mAh", fullUah / 1000.0)} (${full!!.first})")
                 else appendLine("Kernel full-charge capacity: unavailable — " + kernelFieldReason(full, "charge_full", json))
                 if (designUah != null) appendLine("Kernel design capacity: ${String.format(Locale.US, "%.1f mAh", designUah / 1000.0)} (${design!!.first})")
                 else appendLine("Kernel design capacity: unavailable — " + kernelFieldReason(design, "charge_full_design", json))
-                if (fullUah != null && designUah != null) {
-                    appendLine("Kernel gauge-reported health: ${String.format(Locale.US, "%.1f%%", fullUah.toDouble() / designUah.toDouble() * 100.0)}")
+                val health = gauge?.healthPercent
+                if (health != null) {
+                    appendLine("Kernel gauge-reported health: ${String.format(Locale.US, "%.1f%%", health)} (${gauge.source})")
                 } else {
-                    appendLine("Kernel gauge-reported health: unavailable — both charge_full and charge_full_design are required")
+                    appendLine("Kernel gauge-reported health: unavailable — a readable same-supply charge_full and charge_full_design pair is required")
                 }
-                val cycleValue = cycles?.second?.toLongOrNull()
+                val cycleValue = gauge?.cycles
                 if (cycleValue != null) appendLine("Kernel charge cycle count: $cycleValue (${cycles!!.first})")
                 else appendLine("Kernel charge cycle count: unavailable — " + kernelFieldReason(cycles, "cycle_count", json))
             }
@@ -787,7 +784,7 @@ class RecorderDatabase(context: Context) :
             appendLine("=== RECENT DISCHARGING SESSIONS (LAST 30 DAYS) ===")
             appendLine(sessionHistoryReport(recentRows, false, 8))
             appendLine()
-            appendLine("Rate intervals outside 1–90 seconds and known reboot boundaries are excluded. Threshold times are resolved to the sample interval, not exact hardware event times.")
+            appendLine("Rate intervals outside 1–90 seconds and known reboot boundaries are excluded. Screen-state rates omit mixed-state endpoints; counter rates use valid counter intervals only. Threshold times are resolved to the sample interval, not exact hardware event times.")
             val last = readableDatabase.rawQuery(
                 "SELECT timestamp_ms,battery_percent,battery_status,plug_type,foreground_package FROM samples ORDER BY timestamp_ms DESC LIMIT 1", null
             ).use { cursor ->
@@ -982,7 +979,7 @@ class RecorderDatabase(context: Context) :
                             if ((bothPlugged || androidReportsCharging) && delta < 0.0) {
                                 // Some ROMs report EXTRA_PLUGGED=NONE while BATTERY_STATUS remains CHARGING.
                                 add(pluggedDrain, dt, -delta, counterLoss)
-                                add(if (after.screen) pluggedDrainOn else pluggedDrainOff, dt, -delta, counterLoss)
+                                if (before.screen == after.screen) add(if (after.screen) pluggedDrainOn else pluggedDrainOff, dt, -delta, counterLoss)
                                 if (sameApp) {
                                     appPluggedDrain[after.app] = (appPluggedDrain[after.app] ?: 0.0) - delta
                                     if (counterLoss != null) appPluggedDrainCounterMah[after.app] =
@@ -990,7 +987,7 @@ class RecorderDatabase(context: Context) :
                                 }
                             } else if (charging(before) && charging(after) && delta >= 0.0) {
                                 add(charge, dt, delta, counterGain)
-                                add(if (after.screen) chargeOn else chargeOff, dt, delta, counterGain)
+                                if (before.screen == after.screen) add(if (after.screen) chargeOn else chargeOff, dt, delta, counterGain)
                                 if (sameApp) {
                                     appCharge[after.app] = (appCharge[after.app] ?: 0.0) + delta
                                     if (counterGain != null) appChargeCounterMah[after.app] =
@@ -998,7 +995,7 @@ class RecorderDatabase(context: Context) :
                                 }
                             } else if (discharging(before) && discharging(after) && !bothPlugged && delta <= 0.0) {
                                 add(drain, dt, -delta, counterLoss)
-                                add(if (after.screen) drainOn else drainOff, dt, -delta, counterLoss)
+                                if (before.screen == after.screen) add(if (after.screen) drainOn else drainOff, dt, -delta, counterLoss)
                                 if (sameApp) {
                                     appDrain[after.app] = (appDrain[after.app] ?: 0.0) - delta
                                     if (counterLoss != null) appDrainCounterMah[after.app] =
@@ -1080,19 +1077,22 @@ class RecorderDatabase(context: Context) :
             } else {
                 val elapsed = observedDurationMs(run).coerceAtLeast(0L)
                 val delta = last.pct - first.pct
-                val rate = if (elapsed > 0L) kotlin.math.abs(delta.toDouble()) / (elapsed / 3_600_000.0) else 0.0
+                val rate = if (elapsed > 0L) delta.toDouble() / (elapsed / 3_600_000.0) else 0.0
                 val onMs = run.zipWithNext().sumOf { (a, b) ->
                     val dt = sampleIntervalMs(a, b)
-                    if (isRateInterval(a, b, dt) && b.screen) dt else 0L
+                    if (isRateInterval(a, b, dt) && a.screen && b.screen) dt else 0L
                 }
-                val counter = if (first.chargeCounter != null && last.chargeCounter != null)
-                    (last.chargeCounter - first.chargeCounter) / 1000.0 else null
+                val offMs = run.zipWithNext().sumOf { (a, b) ->
+                    val dt = sampleIntervalMs(a, b)
+                    if (isRateInterval(a, b, dt) && !a.screen && !b.screen) dt else 0L
+                }
+                val counter = CounterDelta.between(first.chargeCounter, last.chargeCounter)?.div(1000.0)
                 val state = first.pct.toString() + "%→" + last.pct + "%"
                 val counterText = if (counter == null) "mAh n/a" else String.format(Locale.US, "%+.1f mAh", counter)
                 start + " • " + state + " • " + durationText(elapsed) +
-                    " • " + String.format(Locale.US, "%.2f pp/h", rate) +
+                    " • " + String.format(Locale.US, "%+.2f pp/h", rate) +
                     " • screen ON " + durationText(onMs) +
-                    " / OFF " + durationText(elapsed - onMs) +
+                    " / OFF " + durationText(offMs) + " / mixed " + durationText((elapsed - onMs - offMs).coerceAtLeast(0L)) +
                     " • " + counterText +
                     if (wantCharge && last.state == "FULL") " • full" else ""
             }
@@ -1129,52 +1129,54 @@ class RecorderDatabase(context: Context) :
         val change = current - initial
         val directionMatches = if (wantCharge) change > 0 else change < 0
         val rate = if (directionMatches) kotlin.math.abs(change.toDouble()) / (elapsed / 3_600_000.0) else 0.0
-        val counterDelta = if (first.chargeCounter != null && last.chargeCounter != null) last.chargeCounter - first.chargeCounter else null
+        val counterDelta = CounterDelta.between(first.chargeCounter, last.chargeCounter)
+        val sessionCounter = CounterRateAccumulator()
         var onMs = 0L
         var offMs = 0L
         var onSocChange = 0.0
         var offSocChange = 0.0
-        var onCounterUah = 0L
-        var offCounterUah = 0L
-        var onCounterIntervals = 0
-        var offCounterIntervals = 0
+        var mixedMs = 0L
+        var onSocMs = 0L
+        var offSocMs = 0L
+        val onCounter = CounterRateAccumulator()
+        val offCounter = CounterRateAccumulator()
         for ((before, after) in run.zipWithNext()) {
             val dt = sampleIntervalMs(before, after)
             if (!isRateInterval(before, after, dt)) continue
+            val deltaCounter = CounterDelta.between(before.chargeCounter, after.chargeCounter)
+            sessionCounter.add(deltaCounter, dt)
+            if (before.screen != after.screen) {
+                mixedMs += dt
+                continue
+            }
             val screenBucketOn = after.screen
             if (screenBucketOn) onMs += dt else offMs += dt
             val deltaSoc = if (before.pct != null && after.pct != null) after.pct - before.pct else null
             val socDirectionValid = deltaSoc != null && if (wantCharge) deltaSoc >= 0 else deltaSoc <= 0
             if (socDirectionValid) {
-                if (screenBucketOn) onSocChange += kotlin.math.abs(deltaSoc!!.toDouble())
-                else offSocChange += kotlin.math.abs(deltaSoc!!.toDouble())
-            }
-            val deltaCounter = if (before.chargeCounter != null && after.chargeCounter != null)
-                after.chargeCounter - before.chargeCounter else null
-            val counterDirectionValid = deltaCounter != null && if (wantCharge) deltaCounter > 0L else deltaCounter < 0L
-            if (counterDirectionValid) {
                 if (screenBucketOn) {
-                    onCounterUah += deltaCounter!!
-                    onCounterIntervals++
+                    onSocChange += kotlin.math.abs(deltaSoc!!.toDouble()); onSocMs += dt
                 } else {
-                    offCounterUah += deltaCounter!!
-                    offCounterIntervals++
+                    offSocChange += kotlin.math.abs(deltaSoc!!.toDouble()); offSocMs += dt
                 }
             }
+            val directionCounter = deltaCounter?.takeIf { if (wantCharge) it >= 0L else it <= 0L }
+            if (screenBucketOn) onCounter.add(directionCounter, dt) else offCounter.add(directionCounter, dt)
         }
-        val onRate = if (onMs > 0L) onSocChange / (onMs / 3_600_000.0) else null
-        val offRate = if (offMs > 0L) offSocChange / (offMs / 3_600_000.0) else null
-        val onCounterRate = if (onCounterIntervals > 0) BatteryRateMath.counterRateMa(onCounterUah, onMs) else null
-        val offCounterRate = if (offCounterIntervals > 0) BatteryRateMath.counterRateMa(offCounterUah, offMs) else null
+        val onRate = if (onSocMs > 0L) onSocChange / (onSocMs / 3_600_000.0) else null
+        val offRate = if (offSocMs > 0L) offSocChange / (offSocMs / 3_600_000.0) else null
+        val onCounterRate = onCounter.rateMa()
+        val offCounterRate = offCounter.rateMa()
         val out = StringBuilder()
         out.appendLine("Observed window: " + first.time + " → " + last.time)
         out.appendLine("Level: " + initial + "% → " + current + "% • elapsed: " + durationText(elapsed))
         out.appendLine("Average rate: " + String.format(Locale.US, "%.2f", rate) + " percentage points/hour")
-        if (!directionMatches) out.appendLine(if (wantCharge) "Battery level declined during CHARGING status; no charging-up forecast is valid." else "Battery level increased during DISCHARGING status; no discharge-down forecast is valid.")
-        if (counterDelta != null) out.appendLine("Charge-counter delta: " + String.format(Locale.US, "%+.1f mAh", counterDelta / 1000.0) +
-            " • " + String.format(Locale.US, "%.1f mAh/hour", kotlin.math.abs(counterDelta) / 1000.0 / (elapsed / 3_600_000.0)) + " (Android estimate)")
+        if (!directionMatches) out.appendLine("Battery percentage did not move in the expected direction; no session forecast is valid.")
+        if (counterDelta != null) out.appendLine("Charge-counter endpoint delta: " + String.format(Locale.US, "%+.1f mAh", counterDelta / 1000.0))
+        val measuredRate = sessionCounter.rateMa()
+        if (measuredRate != null) out.appendLine("Charge-counter observed interval rate: " + String.format(Locale.US, "%+.1f mA", measuredRate) + " • measured interval time " + durationText(sessionCounter.observedMs) + " (Android estimate)")
         else out.appendLine("Charge-counter rate: unavailable")
-        out.appendLine("Screen ON: " + durationText(onMs) + " • screen OFF: " + durationText(offMs))
+        out.appendLine("Screen ON: " + durationText(onMs) + " • screen OFF: " + durationText(offMs) + " • mixed endpoints: " + durationText(mixedMs))
         val onRateText = onRate?.let { String.format(Locale.US, "%.2f pp/h", it) } ?: "n/a"
         val offRateText = offRate?.let { String.format(Locale.US, "%.2f pp/h", it) } ?: "n/a"
         val onCounterText = onCounterRate?.let { String.format(Locale.US, "%+.0f mA battery-side", it) } ?: "n/a"
@@ -1203,8 +1205,8 @@ class RecorderDatabase(context: Context) :
             val crossing = thresholdTime(run, threshold, wantCharge)
             val status = when {
                 (wantCharge && initial >= threshold) || (!wantCharge && initial <= threshold) -> "already at threshold at session start"
-                !directionMatches -> if (wantCharge) "not projected: battery level did not increase during this charging-state segment" else "not projected: battery level did not decrease during this discharging-state segment"
                 crossing != null -> durationText(crossing) + " observed"
+                !directionMatches -> if (wantCharge) "not projected: battery level did not increase during this charging-state segment" else "not projected: battery level did not decrease during this discharging-state segment"
                 rate > 0.0 && ((wantCharge && current < threshold) || (!wantCharge && current > threshold)) ->
                     durationText(((kotlin.math.abs(threshold - current).toDouble() / rate) * 3_600_000.0).toLong()) + " estimated from current session average"
                 else -> "not reached / insufficient data"

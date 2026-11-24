@@ -521,14 +521,11 @@ class MainActivity : Activity() {
             val node = key.substringBefore('/').lowercase(Locale.US)
             node in listOf("battery", "bms", "main")
         }
-        fun batteryGaugeValue(field: String): Long? = batteryNodes.entries
-            .firstOrNull { it.key.substringAfterLast('/') == field }
-            ?.value?.toLongOrNull()
-        val kernelCycleCount = batteryGaugeValue("cycle_count")
-        val kernelFullChargeUah = batteryGaugeValue("charge_full")?.takeIf { it > 0L }
-        val kernelDesignChargeUah = batteryGaugeValue("charge_full_design")?.takeIf { it > 0L }
-        val kernelHealthPercent = if (kernelFullChargeUah != null && kernelDesignChargeUah != null)
-            kernelFullChargeUah.toDouble() / kernelDesignChargeUah.toDouble() * 100.0 else null
+        val gauge = KernelGauge.select(reading.supplies)
+        val kernelCycleCount = gauge?.cycles
+        val kernelFullChargeUah = gauge?.fullUah
+        val kernelDesignChargeUah = gauge?.designUah
+        val kernelHealthPercent = gauge?.healthPercent
         val voltageSummary = if (voltageAssessment.usable) {
             "${reading.rawVoltageMv} mV"
         } else {
@@ -580,7 +577,7 @@ class MainActivity : Activity() {
             appendLine("Invalid charger status: ${reading.invalidCharger?.let { if (it != 0) "framework reports invalid charger ($it)" else "framework reports no invalid-charger flag" } ?: "extra not supplied by Android/ROM"}")
             appendLine("Charger advertised maximum current/voltage: ${if (reading.maxChargingCurrentUa != null || reading.maxChargingVoltageUv != null) "partially or fully reported in ACTION_BATTERY_CHANGED" else "not supplied by Android/charger; live USB input V/I may require restricted kernel driver nodes"}")
             appendLine("Battery cycle count: ${reading.cycleCount?.let { "Android extra=$it" } ?: kernelCycleCount?.let { "kernel power_supply=$it" } ?: "not exposed by Android extra or readable battery/BMS sysfs nodes"}")
-            appendLine("Kernel FCC/design-capacity pair: ${if (kernelFullChargeUah != null && kernelDesignChargeUah != null) "available; health estimate " + String.format(Locale.US, "%.1f%%", kernelHealthPercent) else "unavailable — one or both charge_full / charge_full_design attributes are not readable or not exported"}")
+            appendLine("Kernel FCC/design-capacity pair: ${if (kernelFullChargeUah != null && kernelDesignChargeUah != null) "available; health estimate " + String.format(Locale.US, "%.1f%%", kernelHealthPercent) + " from " + gauge?.source else "unavailable — a readable same-supply charge_full / charge_full_design pair is not available"}")
             appendLine("Control writes: NEVER PERFORMED")
             appendLine()
             append(buildMeasurementDiagnosis(reading.supplies, reading.supplyRootReadable))
