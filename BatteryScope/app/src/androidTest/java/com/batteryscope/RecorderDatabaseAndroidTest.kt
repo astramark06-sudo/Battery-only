@@ -42,6 +42,42 @@ class RecorderDatabaseAndroidTest {
     private fun backup(db: RecorderDatabase): ByteArray =
         ByteArrayOutputStream().also { db.exportBackup(it) }.toByteArray()
 
+    @Test fun exactOverlapRecoveryPreservesDuplicatesAndRejectsConflictsAtomically() = database { source ->
+        sample(source,1000,100,70)
+        sample(source,2000,200,69)
+        sample(source,2000,200,69)
+        source.insertEvent(1100,"TEST","earlier")
+        source.insertEvent(2100,"TEST","shared")
+        val file = File.createTempFile("overlap-recovery",".bsh",context.cacheDir)
+        try {
+            file.writeBytes(backup(source))
+            database { target ->
+                sample(target,2000,200,69)
+                sample(target,2000,200,69)
+                sample(target,3000,300,68)
+                target.insertEvent(2100,"TEST","shared")
+                target.insertEvent(3100,"TEST","later")
+                val recovered = target.recoverEarlierWithExactOverlap(file)
+                assertEquals(HistoryBackup.Counts(1,1),recovered.inserted)
+                assertEquals(HistoryBackup.Counts(2,1),recovered.matched)
+                val after = backup(target)
+                val replay = target.recoverEarlierWithExactOverlap(file)
+                assertEquals(HistoryBackup.Counts(0,0),replay.inserted)
+                assertEquals(HistoryBackup.Counts(3,2),replay.matched)
+                assertArrayEquals(after,backup(target))
+                assertEquals(4L,number(target.readableDatabase,"SELECT COUNT(*) FROM samples"))
+            }
+            database { conflict ->
+                sample(conflict,2000,200,69)
+                sample(conflict,2000,200,68)
+                conflict.insertEvent(2100,"TEST","shared")
+                val before = backup(conflict)
+                assertTrue(runCatching { conflict.recoverEarlierWithExactOverlap(file) }.isFailure)
+                assertArrayEquals(before,backup(conflict))
+            }
+        } finally { file.delete() }
+    }
+
     @Test fun usageImportCheckpointIsAtomicDeduplicatedAndPortable() = database { source ->
         val first = UsageHistory.Window(1000,2000,"INITIAL_BOUNDED_LOOKBACK")
         val row = UsageHistory.Transition(1500,1,"com.example")

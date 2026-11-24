@@ -904,15 +904,115 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         }
     }
 
+    private fun importedValues(id: Long, columns: List<HistoryBackup.Column>, row: List<String?>): ContentValues =
+        ContentValues().apply {
+            put("id",id)
+            columns.forEachIndexed { index,column ->
+                val value = row[index]
+                if (value == null) putNull(column.name) else when (column.type) {
+                    HistoryBackup.Type.INTEGER -> put(column.name,value.toLong())
+                    HistoryBackup.Type.REAL -> put(column.name,value.toDouble())
+                    HistoryBackup.Type.TEXT -> put(column.name,value)
+                }
+            }
+        }
+
+    private fun earliestTimestamp(db: SQLiteDatabase): Long? =
+        db.rawQuery("SELECT MIN(t) FROM (SELECT MIN(timestamp_ms) AS t FROM samples UNION ALL SELECT MIN(timestamp_ms) AS t FROM events)",null).use {
+            check(it.moveToFirst()); if (it.isNull(0)) null else it.getLong(0)
+        }
+
+    internal data class OverlapRecovery(val inserted: HistoryBackup.Counts, val matched: HistoryBackup.Counts)
+
+    /**
+     * Explicit portable-backup recovery mode. The only accepted shape is an
+     * earlier prefix followed by an exact ordered prefix of existing records
+     * (independently for samples and events). No insertion in the middle,
+     * replacement, timestamp-only deduplication or CSV approximation.
+     */
+    internal fun recoverEarlierWithExactOverlap(file: File): OverlapRecovery {
+        val boundary = earliestTimestamp(readableDatabase)
+        fun earlier(row: List<String?>): Boolean =
+            boundary == null || requireNotNull(row.first()).toLong() < boundary
+        var earlierSamples = 0L
+        var earlierEvents = 0L
+        var overlapSamples = false
+        var overlapEvents = false
+        val expected = file.inputStream().use { input ->
+            HistoryBackup.read(input,{}, { row ->
+                if (earlier(row)) {
+                    require(!overlapSamples) { "Earlier sample after overlap; sequence cannot be preserved" }
+                    earlierSamples++
+                } else overlapSamples = true
+            }, { row ->
+                if (earlier(row)) {
+                    require(!overlapEvents) { "Earlier event after overlap; sequence cannot be preserved" }
+                    earlierEvents++
+                } else overlapEvents = true
+            })
+        }
+        require(expected.total > 0L) { "Backup has no history" }
+        val inserted = HistoryBackup.Counts(earlierSamples,earlierEvents)
+        val matched = HistoryBackup.Counts(expected.samples-earlierSamples,expected.events-earlierEvents)
+        val db = writableDatabase
+        db.beginTransactionNonExclusive()
+        try {
+            check(earliestTimestamp(db) == boundary) { "History boundary changed; retry recovery" }
+            val snap = snapshot(db)
+            require(matched.samples <= snap.samples.count && matched.events <= snap.events.count) {
+                "Backup contains unmatched overlapping or later records"
+            }
+            var sampleId = HistoryBackup.firstImportedId(snap.samples.minId.takeIf { snap.samples.count > 0L },inserted.samples)
+            var eventId = HistoryBackup.firstImportedId(snap.events.minId.takeIf { snap.events.count > 0L },inserted.events)
+            var newSamples = 0L
+            var newEvents = 0L
+            var matchedSamples = 0L
+            var matchedEvents = 0L
+            snapshotCursor(db,"samples",snap.samples,HistoryBackup.sampleColumns).use { sampleCursor ->
+                snapshotCursor(db,"events",snap.events,HistoryBackup.eventColumns).use { eventCursor ->
+                    val sampleRows = backupRows(sampleCursor,HistoryBackup.sampleColumns).iterator()
+                    val eventRows = backupRows(eventCursor,HistoryBackup.eventColumns).iterator()
+                    file.inputStream().use { input ->
+                        HistoryBackup.read(input,{ require(it == expected) { "Backup counts changed" } }, { row ->
+                            if (earlier(row)) {
+                                check(matchedSamples == 0L && newSamples < inserted.samples)
+                                db.insertOrThrow("samples",null,importedValues(sampleId++,HistoryBackup.sampleColumns,row))
+                                newSamples++
+                            } else {
+                                require(matchedSamples < matched.samples && sampleRows.hasNext() && sampleRows.next() == row) {
+                                    "Overlapping sample differs from existing ordered history; nothing restored"
+                                }
+                                matchedSamples++
+                            }
+                        }, { row ->
+                            if (earlier(row)) {
+                                check(matchedEvents == 0L && newEvents < inserted.events)
+                                db.insertOrThrow("events",null,importedValues(eventId++,HistoryBackup.eventColumns,row))
+                                newEvents++
+                            } else {
+                                require(matchedEvents < matched.events && eventRows.hasNext() && eventRows.next() == row) {
+                                    "Overlapping event differs from existing ordered history; nothing restored"
+                                }
+                                matchedEvents++
+                            }
+                        })
+                    }
+                }
+            }
+            check(newSamples == inserted.samples && newEvents == inserted.events &&
+                matchedSamples == matched.samples && matchedEvents == matched.events) { "Recovery counts changed" }
+            db.setTransactionSuccessful()
+            return OverlapRecovery(inserted,matched)
+        } finally { db.endTransaction() }
+    }
+
     private fun restoreHistory(
         read: ((HistoryBackup.Counts) -> Unit, (List<String?>) -> Unit, (List<String?>) -> Unit) -> HistoryBackup.Counts
     ): HistoryBackup.Counts {
         val db = writableDatabase
         db.beginTransactionNonExclusive()
         try {
-            val earliest = db.rawQuery("SELECT MIN(t) FROM (SELECT MIN(timestamp_ms) AS t FROM samples UNION ALL SELECT MIN(timestamp_ms) AS t FROM events)", null).use {
-                check(it.moveToFirst()); if (it.isNull(0)) null else it.getLong(0)
-            }
+            val earliest = earliestTimestamp(db)
             fun minId(table: String): Long? = db.rawQuery("SELECT MIN(id) FROM $table",null).use {
                 check(it.moveToFirst()); if (it.isNull(0)) null else it.getLong(0)
             }
@@ -920,18 +1020,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             var eventId = 1L
             fun insert(table: String, id: Long, columns: List<HistoryBackup.Column>, row: List<String?>) {
                 HistoryBackup.requireEarlier(requireNotNull(row.first()).toLong(), earliest)
-                val values = ContentValues().apply {
-                    put("id", id)
-                    columns.forEachIndexed { index, column ->
-                        val value = row[index]
-                        if (value == null) putNull(column.name) else when(column.type) {
-                            HistoryBackup.Type.INTEGER -> put(column.name, value.toLong())
-                            HistoryBackup.Type.REAL -> put(column.name, value.toDouble())
-                            HistoryBackup.Type.TEXT -> put(column.name, value)
-                        }
-                    }
-                }
-                db.insertOrThrow(table, null, values)
+                db.insertOrThrow(table, null, importedValues(id,columns,row))
             }
             val counts = read({ header ->
                 require(header.total > 0L) { "Backup has no history" }

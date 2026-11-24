@@ -128,7 +128,8 @@ internal class HistoryOperationCoordinator(
         Result("Prepared copy discarded. Local telemetry history unchanged.")
     }
 
-    fun restore(app: Context, uri: Uri, legacy: Boolean): Boolean = start(app, "Validating and restoring earlier history…") { context ->
+    fun restore(app: Context, uri: Uri, legacy: Boolean, exactOverlap: Boolean = false): Boolean = start(app, "Validating and restoring earlier history…") { context ->
+        require(!legacy || !exactOverlap) { "Exact overlap recovery requires a portable backup" }
         val file = File.createTempFile("restore_", ".bsh", context.cacheDir)
         try {
             val input = context.contentResolver.openInputStream(uri) ?: error("Cannot read selected backup")
@@ -138,10 +139,17 @@ internal class HistoryOperationCoordinator(
                 "Insufficient free internal storage for restore (estimated requirement " + estimatedRequired + " bytes)"
             }
             val database = RecorderDatabase(context)
-            val result = try {
-                if (legacy) database.restoreLegacyCsv(file) else database.restoreBackup(file)
+            try {
+                if (exactOverlap) {
+                    val recovered = database.recoverEarlierWithExactOverlap(file)
+                    Result("Restored " + recovered.inserted.samples + " samples and " + recovered.inserted.events +
+                        " events; matched and retained " + recovered.matched.total +
+                        " existing records in sequence. Existing history preserved.", recovered.inserted.total > 0L)
+                } else {
+                    val result = if (legacy) database.restoreLegacyCsv(file) else database.restoreBackup(file)
+                    Result("Restored " + result.samples + " samples and " + result.events + " events. Existing records preserved.", true)
+                }
             } finally { database.close() }
-            Result("Restored " + result.samples + " samples and " + result.events + " events. Existing records preserved.", true)
         } finally { file.delete() }
     }
 }

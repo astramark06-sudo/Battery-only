@@ -229,6 +229,10 @@ class MainActivity : Activity() {
             setOnClickListener { chooseHistoryBackup() }
         }
         content.addView(restoreButton, LinearLayout.LayoutParams(-1, -2))
+        content.addView(Button(this).apply {
+            text = "Recover earlier history with exact overlap"
+            setOnClickListener { chooseHistoryBackup(exactOverlap = true) }
+        }, LinearLayout.LayoutParams(-1, -2))
         val legacyButton = Button(this).apply {
             text = "Import original BatteryScope CSV"
             setOnClickListener { chooseHistoryBackup(true) }
@@ -824,11 +828,12 @@ class MainActivity : Activity() {
     @Deprecated("Handled for Android document-picker compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == BACKUP_IMPORT_REQUEST_CODE || requestCode == LEGACY_IMPORT_REQUEST_CODE) {
+        if (requestCode == BACKUP_IMPORT_REQUEST_CODE || requestCode == LEGACY_IMPORT_REQUEST_CODE || requestCode == OVERLAP_IMPORT_REQUEST_CODE) {
             val expected = pendingImportRequest == requestCode
             pendingImportRequest = 0
             if (expected && resultCode == RESULT_OK) data?.data?.let {
-                if (!HistoryOperations.restore(applicationContext, it, requestCode == LEGACY_IMPORT_REQUEST_CODE))
+                if (!HistoryOperations.restore(applicationContext, it, requestCode == LEGACY_IMPORT_REQUEST_CODE,
+                    exactOverlap = requestCode == OVERLAP_IMPORT_REQUEST_CODE))
                     statusText.text = "Another history operation is in progress. Select the backup again later."
             }
             updateHistoryOperations()
@@ -852,15 +857,15 @@ class MainActivity : Activity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun chooseHistoryBackup(legacy: Boolean = false) {
+    private fun chooseHistoryBackup(legacy: Boolean = false, exactOverlap: Boolean = false) {
         if (historyBusy()) return
         AlertDialog.Builder(this)
-            .setTitle(if (legacy) "Import original CSV" else "Restore earlier history")
-            .setMessage(if (legacy) "Select the original, unedited 28-column BatteryScope CSV from this handset. CSV is not checksummed or lossless; missing fields and flattened text cannot be recovered. Existing history will not be overwritten and overlap is rejected." else "Use only a BatteryScope .bsh backup from this handset. The format cannot prove its original device. Existing history will not be overwritten. Overlapping timestamps are rejected. Large backups may take time and temporary storage.")
+            .setTitle(if (legacy) "Import original CSV" else if (exactOverlap) "Recover earlier history with exact overlap" else "Restore earlier history")
+            .setMessage(if (legacy) "Select the original, unedited 28-column BatteryScope CSV from this handset. CSV is not checksummed or lossless; missing fields and flattened text cannot be recovered. Existing history will not be overwritten and overlap is rejected." else if (exactOverlap) "Use only a portable backup from this same handset. Its source identity is not authenticated. Only earlier records can be inserted; overlapping records must match the existing sequence and every typed value exactly. Any conflict rolls back the entire operation. Later or interleaved records cannot be merged." else "Use only a BatteryScope .bsh backup from this handset. The format cannot prove its original device. Existing history will not be overwritten. Overlapping timestamps are rejected. Large backups may take time and temporary storage.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Choose backup") { _, _ ->
                 if (!historyBusy()) {
-                    pendingImportRequest = if (legacy) LEGACY_IMPORT_REQUEST_CODE else BACKUP_IMPORT_REQUEST_CODE
+                    pendingImportRequest = if (legacy) LEGACY_IMPORT_REQUEST_CODE else if (exactOverlap) OVERLAP_IMPORT_REQUEST_CODE else BACKUP_IMPORT_REQUEST_CODE
                     try {
                         startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                             addCategory(Intent.CATEGORY_OPENABLE)
@@ -881,6 +886,7 @@ class MainActivity : Activity() {
         private const val CSV_EXPORT_REQUEST_CODE = 5101
         private const val BACKUP_IMPORT_REQUEST_CODE = 5103
         private const val LEGACY_IMPORT_REQUEST_CODE = 5104
+        private const val OVERLAP_IMPORT_REQUEST_CODE = 5105
         private const val NOTIFICATION_REQUEST_CODE = 5102
     }
 }

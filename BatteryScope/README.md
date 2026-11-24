@@ -1,5 +1,11 @@
 # BatteryScope 1.15 — Realme Narzo 20 Pro (RMX2161)
 
+## 2026-11-25 — Explicit exact-prefix overlap recovery (R16 partial)
+
+- Added a separate user-confirmed portable-backup recovery option. Two full checksum/validation passes classify an earlier prefix per table, then compare every overlapping typed record to the existing ordered prefix, including duplicates. Only the earlier prefix is inserted; conflicting, later or interleaved records cause complete rollback. Existing earlier-only restore and CSV importer remain unchanged.
+- Replaying an exact backup prefix is a no-op; no timestamp-only deduplication or arbitrary interleaving. The staged file remains private during processing, the boundary is rechecked under a write transaction, existing row bounds remain fixed. Backup provenance is unauthenticated, and cross-device import is not supported. Added Android exact overlap, duplicate, replay and conflict rollback regression. Long write transactions remain a performance limitation.
+- No schema/version/signing/permission change or production data mutation. New cumulative CI required.
+
 ## 2026-11-25 — Bounded public resource inventory (R19 partial)
 
 - Extend low-cadence resource snapshots with display state and current mode configuration, storage volume state/type (no labels/UUIDs/paths), sensor descriptors (max 64, explicit truncation), ABI list, time-zone offset and acquisition completion timestamps. Descriptors are not live sensor measurements. Display configurations are not panel power.
