@@ -1,5 +1,15 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Verified CI recovery checkpoint
+
+The active development branch is `fix/apk-update-preflight`, draft [PR #3](https://github.com/astramark06-sudo/Battery-only/pull/3). Head `54c9efa80a147c4093de5985cc8d24058373be05`; tested PR merge ref `cefed72488be9cd7aafcc013fa7fb6c26741e921`.
+
+- [Android CI run 45468739015](https://github.com/astramark06-sudo/Battery-only/actions/runs/45468739015): both build/test/inspection and Android 12L emulator jobs succeeded. Four instrumentation tests ran and completed; JVM test task and both APK assemblies succeeded. The prior missing-AVD failure is resolved in this run.
+- [Signing policy run 45468739077](https://github.com/astramark06-sudo/Battery-only/actions/runs/45468739077): eight synthetic policy tests passed.
+- Debug APK artifact ID 14957875318, size 961,918 bytes (APK), package com.batteryscope, versionName 1.15, versionCode 16, v2 signature verified by CI. APK SHA-256 `a3e4980338ce0aff1ae97a5c77b4c71537d972d2d5bb0d54e658598d94172cd7`; certificate SHA-256 `c63b35c09c7ca7a8533a76b3d36cb19e1b09366d8dc90d05b9952031f6611df9`. ZIP digest `e2cbbba0ecc5829f989afb390106c6d5baee5ebe009154adf4e3ce142e5878d1`. Values taken from CI logs and artifact metadata, not an independent local artifact inspection.
+- The certificate differs from the documented historical v1.14 and v1.15 certificates. The version code also remains 16, so this is not a verified release update. Keep PR draft; do not uninstall, merge or distribute as an update.
+- Next release gate: independently identify the actually installed version and public signing certificate; determine whether its original signing key remains securely available. Never upload private keys or passwords to the repository or chat. Then run real candidate/baseline preflight and physical RMX2161 migration, measurement and recorder tests. Device-wide collector expansion and long-history benchmarking remain development work.
+
 ## 2026-11-25 — Android integration verification
 
 Added CI-only Android 12L instrumentation job and isolated SQLiteOpenHelper tests for actual v4 migration, duplicate timestamps, portable backup round-trip, exact REAL and signed INTEGER preservation, corruption/overlap rollback, earlier-history ordering and legacy CSV import. The app itself does not require ADB or emulator setup. Backup reads numeric cursor values by their declared type rather than using platform-dependent string formatting. App ID, version and database schema unchanged; physical RMX2161 migration remains unverified. CI pending.
