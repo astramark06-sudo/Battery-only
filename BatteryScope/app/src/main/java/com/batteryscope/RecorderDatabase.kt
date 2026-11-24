@@ -240,7 +240,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         }
     }
 
-    fun historySummary(now: Long = System.currentTimeMillis()): String {
+    fun historySummary(now: Long = System.currentTimeMillis(), chargingFocus: Boolean = false): String {
         val windows = listOf(
             "24 HOURS" to 24L * 60 * 60 * 1000,
             "7 DAYS" to 7L * 24 * 60 * 60 * 1000,
@@ -265,13 +265,18 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             val total = range.count
             appendLine("BATTERYSCOPE LOCAL HISTORY • RAW SAMPLES RETAINED UNTIL USER DELETES APP DATA")
             appendLine("Stored samples: " + total + " • target sample interval: 30 seconds")
-            val usageBoundary = usageCheckpoint()
-            appendLine("Package transition import query boundary: " +
-                (usageBoundary?.let { SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z",Locale.US).format(Date(it)) } ?: "not imported") +
-                " • local OS events only; retention and completeness not guaranteed")
+            if (!chargingFocus) {
+                val usageBoundary = usageCheckpoint()
+                appendLine("Package transition import query boundary: " +
+                    (usageBoundary?.let { SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z",Locale.US).format(Date(it)) } ?: "not imported") +
+                    " • local OS events only; retention and completeness not guaranteed")
+            } else {
+                appendLine("Charging-focused reporting: no new app or device-resource collection. Earlier raw history retained.")
+                appendLine("Actual amperage/wattage is not inferred from SOC or the charge counter. Observed percentage-point rates are not electrical measurements.")
+            }
             appendLine("Report excludes samples dated after its reference time; original records remain stored.")
             if (latestReading != null) appendLine("Last eligible battery level sample age: " + durationText(now - latestReading.second))
-            appendLine("App and screen correlation uses matching sampled endpoints, not proof of continuous occupancy or a direct per-app electrical measurement. App correlation also requires Usage Access at both endpoints.")
+            if (!chargingFocus) appendLine("App and screen correlation uses matching sampled endpoints, not proof of continuous occupancy or a direct per-app electrical measurement. App correlation also requires Usage Access at both endpoints.")
             appendLine("Counter-derived averages may reflect coarse gauge steps (45,000 µAh observed on RMX2161), not instantaneous current. Implausible counter values and interval jumps are excluded from interval averages; raw readings are retained.")
             for ((index, window) in windows.withIndex()) {
                 val label = window.first
@@ -281,9 +286,11 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 appendLine("Sampling continuity: " + stats.gapReport)
                 appendLine("Charging: " + stats.chargeHours + " h • +" + stats.chargedPct + " percentage points • " + stats.chargeRate + " %/h")
                 appendLine("Discharging: " + stats.dischargeHours + " h • -" + stats.dischargedPct + " percentage points • " + stats.dischargeRate + " %/h")
-                appendLine("Charge-counter gain/loss: +" + stats.chargeGainMah + " / -" + stats.chargeLossMah + " mAh (Android estimate)")
-                appendLine("Average battery-side charge rate from counter: " + stats.chargeCounterRateMa + " mA • discharge rate: " + stats.dischargeCounterRateMa + " mA (not USB input current)")
-                appendLine("Counter interval duration: " + stats.counterCoverage)
+                if (!chargingFocus) {
+                    appendLine("Charge-counter gain/loss: +" + stats.chargeGainMah + " / -" + stats.chargeLossMah + " mAh (Android estimate)")
+                    appendLine("Average battery-side charge rate from counter: " + stats.chargeCounterRateMa + " mA • discharge rate: " + stats.dischargeCounterRateMa + " mA (not USB input current)")
+                    appendLine("Counter interval duration: " + stats.counterCoverage)
+                }
                 appendLine("Charging screen ON: " + stats.chargeOnHours + " h • +" + stats.chargeOnPct + "% • " + stats.chargeOnRate + " %/h")
                 appendLine("Charging screen OFF: " + stats.chargeOffHours + " h • +" + stats.chargeOffPct + "% • " + stats.chargeOffRate + " %/h")
                 appendLine("Charging rate comparison: screen ON " + stats.chargeOnRate + " %/h vs screen OFF " + stats.chargeOffRate + " %/h (historical averages)")
@@ -302,26 +309,28 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 appendLine("  Plugged decline screen ON: " + stats.pluggedDrainOnHours + " h • -" + stats.pluggedDrainOnPct + "% • " + stats.pluggedDrainOnRate + " %/h")
                 appendLine("  Plugged decline screen OFF: " + stats.pluggedDrainOffHours + " h • -" + stats.pluggedDrainOffPct + "% • " + stats.pluggedDrainOffRate + " %/h")
                 appendLine("Screen state samples: ON " + stats.screenOn + " • OFF " + stats.screenOff)
+                if (!chargingFocus) {
                 appendLine("Foreground app time + coincident battery change (approx.):")
                 if (stats.apps.isEmpty()) appendLine("  unavailable / Usage Access not granted / not yet recorded")
                 else stats.apps.take(8).forEach { app ->
                     appendLine("  " + app.name + ": " + app.minutes + " min foreground • +" + app.chargePct + "% charging (counter " + app.counter(app.chargeCounterMah) + ") • -" + app.drainPct + "% unplugged (counter " + app.counter(app.drainCounterMah) + ") • -" + app.pluggedDrainPct + "% connected (counter " + app.counter(app.pluggedDrainCounterMah) + ")")
                 }
+                }
             }
             appendLine()
-            appendLine(resourceHistoryReport(now, range))
+            if (!chargingFocus) appendLine(resourceHistoryReport(now, range))
             appendLine()
             appendLine("=== MOST RECENT CHARGING SESSION (LAST 30 DAYS) ===")
-            appendLine(sessionReport(recent.charging.firstOrNull(), recent.hasSamples, true))
+            appendLine(sessionReport(recent.charging.firstOrNull(), recent.hasSamples, true, chargingFocus))
             appendLine()
             appendLine("=== MOST RECENT DISCHARGING SESSION (LAST 30 DAYS) ===")
-            appendLine(sessionReport(recent.discharging.firstOrNull(), recent.hasSamples, false))
+            appendLine(sessionReport(recent.discharging.firstOrNull(), recent.hasSamples, false, chargingFocus))
             appendLine()
             appendLine("=== RECENT CHARGING SESSIONS (LAST 30 DAYS) ===")
-            appendLine(sessionHistoryReport(recent.charging, recent.hasSamples, true))
+            appendLine(sessionHistoryReport(recent.charging, recent.hasSamples, true, chargingFocus))
             appendLine()
             appendLine("=== RECENT DISCHARGING SESSIONS (LAST 30 DAYS) ===")
-            appendLine(sessionHistoryReport(recent.discharging, recent.hasSamples, false))
+            appendLine(sessionHistoryReport(recent.discharging, recent.hasSamples, false, chargingFocus))
             appendLine()
             appendLine("Rates require 1–90 seconds and a known shared boot identity; unknown/reboot intervals remain stored but are excluded from rates. Screen-state rates omit mixed-state endpoints; counter rates use valid counter intervals only. Threshold times are resolved to the sample interval, not exact hardware event times.")
             val last = readableDatabase.rawQuery(
@@ -331,7 +340,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 if (!cursor.moveToFirst()) "No sample recorded yet"
                 else "Last sample: " + SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z",Locale.US).format(Date(cursor.getLong(0))) + " • " +
                     (if (cursor.isNull(1)) "--" else cursor.getInt(1).toString() + "%") + " • " +
-                    cursor.getString(2) + " • " + cursor.getString(3) + " • app=" + cursor.getString(4)
+                    cursor.getString(2) + " • " + cursor.getString(3) + (if (chargingFocus) "" else " • app=" + cursor.getString(4))
             }
             appendLine(last)
         }
@@ -696,7 +705,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         }
     }
 
-    private fun sessionHistoryReport(sessions: List<SessionAccumulator>, hasSamples: Boolean, wantCharge: Boolean): String {
+    private fun sessionHistoryReport(sessions: List<SessionAccumulator>, hasSamples: Boolean, wantCharge: Boolean, chargingFocus: Boolean): String {
         if (!hasSamples) return "No samples recorded."
         if (sessions.isEmpty()) return "No recorded sessions."
         val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
@@ -719,13 +728,13 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                     " • " + rate +
                     " • screen ON " + durationText(run.onMs) +
                     " / OFF " + durationText(run.offMs) + " / mixed " + durationText(run.mixedMs) +
-                    " • " + counterText +
+                    (if (chargingFocus) "" else " • " + counterText) +
                     if (wantCharge && last.state == "FULL") " • full" else ""
             }
         }
     }
 
-    private fun sessionReport(run: SessionAccumulator?, hasSamples: Boolean, wantCharge: Boolean): String {
+    private fun sessionReport(run: SessionAccumulator?, hasSamples: Boolean, wantCharge: Boolean, chargingFocus: Boolean): String {
         if (!hasSamples) return "No samples recorded."
         if (run == null) return "No recorded session."
         if (run.count < 2) return "Session has only one sample; rate and duration are not yet measurable."
@@ -757,10 +766,12 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         out.appendLine("Level: " + initial + "% → " + current + "% • elapsed: " + durationText(elapsed))
         out.appendLine("Average rate: " + String.format(Locale.US, "%.2f", rate) + " percentage points/hour")
         if (!directionMatches) out.appendLine("Battery percentage did not move in the expected direction; no session forecast is valid.")
-        if (counterDelta != null) out.appendLine("Charge-counter endpoint delta (not interval-validated): " + String.format(Locale.US, "%+.1f mAh", counterDelta / 1000.0))
+        if (!chargingFocus && counterDelta != null) out.appendLine("Charge-counter endpoint delta (not interval-validated): " + String.format(Locale.US, "%+.1f mAh", counterDelta / 1000.0))
         val measuredRate = sessionCounter.rateMa()
-        if (measuredRate != null) out.appendLine("Charge-counter observed interval rate: " + String.format(Locale.US, "%+.1f mA", measuredRate) + " • accepted interval time " + (sessionCounter.observedMs / 1000L) + "s of " + (elapsed / 1000L) + "s (quantized Android estimate)")
-        else out.appendLine("Charge-counter rate: unavailable")
+        if (!chargingFocus) {
+            if (measuredRate != null) out.appendLine("Charge-counter observed interval rate: " + String.format(Locale.US, "%+.1f mA", measuredRate) + " • accepted interval time " + (sessionCounter.observedMs / 1000L) + "s of " + (elapsed / 1000L) + "s (quantized Android estimate)")
+            else out.appendLine("Charge-counter rate: unavailable")
+        }
         out.appendLine("Screen ON: " + durationText(onMs) + " • screen OFF: " + durationText(offMs) + " • mixed endpoints: " + durationText(mixedMs))
         val onRateText = onRate?.let { String.format(Locale.US, "%.2f pp/h", it) } ?: "n/a"
         val offRateText = offRate?.let { String.format(Locale.US, "%.2f pp/h", it) } ?: "n/a"
@@ -780,9 +791,9 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             offRate == null -> "not enough screen-OFF data"
             else -> forecastDuration(remaining, String.format(Locale.US, "%.6f", offRate))
         }
-        out.appendLine("Screen ON (display-on proxy): " + onRateText + " • " + onCounterText +
+        out.appendLine("Screen ON (display-on proxy): " + onRateText + (if (chargingFocus) "" else " • " + onCounterText) +
             " • time to " + thresholdName + ": " + onForecast)
-        out.appendLine("Screen OFF (display-off proxy): " + offRateText + " • " + offCounterText +
+        out.appendLine("Screen OFF (display-off proxy): " + offRateText + (if (chargingFocus) "" else " • " + offCounterText) +
             " • time to " + thresholdName + ": " + offForecast)
         val thresholds = run.thresholds
         out.appendLine(if (wantCharge) "Time from first recorded sample in this session to charge thresholds:" else "Time from first recorded sample in this session to discharge thresholds:")

@@ -1,13 +1,10 @@
 package com.batteryscope
 
-import android.app.AppOpsManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.app.usage.UsageEvents
-import android.app.usage.UsageStatsManager
 import android.content.BroadcastReceiver
 import android.content.ContentValues
 import android.content.Context
@@ -21,7 +18,6 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
 import org.json.JSONObject
@@ -35,9 +31,6 @@ class BatteryRecorderService : Service() {
     private var databaseAvailable = true
     private lateinit var batteryManager: BatteryManager
     @Volatile private var batteryIntent: Intent? = null
-    private var lastUsageQueryMs = 0L
-    private var lastUsageImportStatus: String? = null
-    private var foregroundPackage: String? = null
     private var lastSampleState: String? = null
     private var lastSamplePlug: String? = null
     private var lastBatteryPercentStatus: String? = null
@@ -365,13 +358,6 @@ class BatteryRecorderService : Service() {
             lastVoltageMeasurementQuality = voltageQuality
         }
         val screenOn = (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
-        val accessBefore = hasUsageAccess()
-        val activeApp = updateForegroundPackage(now, accessBefore)
-        val usageAccess = accessBefore && hasUsageAccess()
-        if (!usageAccess) {
-            foregroundPackage = null
-            lastUsageQueryMs = 0L
-        }
         val inventoryJson = inventory?.let {
             JSONObject(it.value)
                 .put("@inventory_request_started_elapsed_ms", it.startedElapsedMs)
@@ -411,8 +397,9 @@ class BatteryRecorderService : Service() {
             put("battery_health", health)
             put("technology", intent?.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY) ?: "NOT_REPORTED")
             put("screen_on", if (screenOn) 1 else 0)
-            put("foreground_package", if (usageAccess) activeApp ?: "" else "")
-            put("usage_access", if (usageAccess) 1 else 0)
+            // Keep legacy columns for compatible export/restore; no new app tracking.
+            put("foreground_package","")
+            put("usage_access",0)
             // Use the existing extensible JSON field, retaining the v5 schema and
             // portable backup/CSV columns. Metadata-only rows are not inventories.
             val metadata = inventoryJson ?: JSONObject()
@@ -458,62 +445,6 @@ class BatteryRecorderService : Service() {
         return result.first
     }
 
-    private fun hasUsageAccess(): Boolean = try {
-        val ops = getSystemService(APP_OPS_SERVICE) as AppOpsManager
-        val mode = if (Build.VERSION.SDK_INT >= 29) {
-            ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
-        } else {
-            @Suppress("DEPRECATION")
-            ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
-        }
-        mode == AppOpsManager.MODE_ALLOWED
-    } catch (_: Throwable) { false }
-
-    private fun updateForegroundPackage(now: Long, access: Boolean): String? {
-        if (!access) {
-            if (foregroundPackage != null) event("USAGE_ACCESS_REVOKED", "Usage Access unavailable; clearing previous foreground app attribution")
-            foregroundPackage = null
-            lastUsageQueryMs = 0L
-            return null
-        }
-        val manager = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
-        if (lastUsageQueryMs > now) {
-            lastUsageQueryMs = 0L
-            foregroundPackage = null
-        }
-        val from = if (lastUsageQueryMs > 0L) lastUsageQueryMs else (now - 60_000L).coerceAtLeast(0L)
-        return try {
-            val events = manager.queryEvents(from, now) ?: throw IllegalStateException("Usage events unavailable")
-            val event = UsageEvents.Event()
-            while (events.hasNextEvent()) {
-                events.getNextEvent(event)
-                when (event.eventType) {
-                    UsageEvents.Event.ACTIVITY_RESUMED, UsageEvents.Event.MOVE_TO_FOREGROUND -> {
-                        val next = event.packageName
-                        if (next != foregroundPackage) {
-                            if (foregroundPackage != null) this.eventAt(event.timeStamp, "APP_FOREGROUND_END", foregroundPackage!!)
-                            foregroundPackage = next
-                            this.eventAt(event.timeStamp, "APP_FOREGROUND_START", next)
-                        }
-                    }
-                    UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.MOVE_TO_BACKGROUND -> {
-                        if (event.packageName == foregroundPackage) {
-                            this.eventAt(event.timeStamp, "APP_FOREGROUND_END", event.packageName)
-                            foregroundPackage = null
-                        }
-                    }
-                }
-            }
-            lastUsageQueryMs = now
-            foregroundPackage
-        } catch (t: Throwable) {
-            this.event("USAGE_QUERY_ERROR", t.javaClass.simpleName + ": " + (t.message ?: "unknown"))
-            lastUsageQueryMs = 0L
-            foregroundPackage = null
-            null
-        }
-    }
-
     private fun requestInventory(nowElapsedMs: Long) {
         if (!inventoryHandoff.request(nowElapsedMs)) return
         if (!inventoryHandler.post {
@@ -527,7 +458,6 @@ class BatteryRecorderService : Service() {
                         inventoryHandoff.complete(fields, started, finished)
                         completed = true
                     }
-                    if (recorderRunning) importUsageHistory()
                 }
             } catch (e: Exception) {
                 if (recorderRunning) event("INVENTORY_ERROR", e.javaClass.simpleName)
@@ -538,55 +468,6 @@ class BatteryRecorderService : Service() {
             inventoryHandoff.failed()
             event("INVENTORY_ERROR", "WORKER_QUEUE_REJECTED")
         }
-    }
-
-    /** Slow historical queries run off the recorder worker. The existing live
-     * foreground correlation remains separate and does not prove occupancy. */
-    private fun importUsageHistory() {
-        fun status(value: String) {
-            if (value != lastUsageImportStatus && recorderRunning) {
-                lastUsageImportStatus = value
-                event("USAGE_IMPORT_STATUS",value)
-            }
-        }
-        if (!hasUsageAccess()) { status("UNAVAILABLE_PERMISSION"); return }
-        val database = RecorderDatabase(applicationContext)
-        try {
-            val manager = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
-            // At most four bounded query/commit batches per inventory pass.
-            repeat(4) {
-                if (!recorderRunning || !hasUsageAccess()) return
-                val checkpoint = database.usageCheckpoint()
-                var window = UsageHistory.next(checkpoint,System.currentTimeMillis()) ?: run {
-                    status("CAUGHT_UP_TO_SETTLED_QUERY_BOUNDARY"); return
-                }
-                var attempts = 0
-                while (true) {
-                    check(++attempts <= 16) { "USAGE_QUERY_DENSITY_LIMIT" }
-                    val queried = manager.queryEvents(window.from,window.end)
-                        ?: throw IllegalStateException("USAGE_EVENTS_UNAVAILABLE")
-                    val rows = ArrayList<UsageHistory.Transition>()
-                    val event = UsageEvents.Event()
-                    var examined = 0
-                    var dense = false
-                    while (queried.hasNextEvent()) {
-                        if (++examined > UsageHistory.MAX_EVENTS) { dense = true; break }
-                        if (!queried.getNextEvent(event)) throw IllegalStateException("USAGE_EVENT_READ_FAILED")
-                        val row = UsageHistory.Transition(event.timeStamp,event.eventType,event.packageName ?: "")
-                        if (row.valid(window)) rows.add(row)
-                    }
-                    if (dense) {
-                        window = UsageHistory.shrink(window,checkpoint) ?: error("USAGE_QUERY_DENSITY_LIMIT")
-                        continue
-                    }
-                    database.commitUsageWindow(checkpoint,window,rows) { recorderRunning && hasUsageAccess() }
-                    status("IMPORTED_BOUNDED_QUERY_WINDOWS")
-                    break
-                }
-            }
-        } catch (e: Exception) {
-            status("QUERY_OR_COMMIT_FAILED:" + e.javaClass.simpleName + ":" + (e.message ?: "").take(100))
-        } finally { database.close() }
     }
 
     private fun insertSample(values: ContentValues) {

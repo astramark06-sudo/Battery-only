@@ -42,6 +42,22 @@ class RecorderDatabaseAndroidTest {
     private fun backup(db: RecorderDatabase): ByteArray =
         ByteArrayOutputStream().also { db.exportBackup(it) }.toByteArray()
 
+    @Test fun chargingFocusedReportRetainsHistoricalRawDataWithoutUnrelatedPanels() = database { db ->
+        sample(db,1000,100,30,true)
+        sample(db,31000,30100,31,true)
+        db.writableDatabase.execSQL("UPDATE samples SET screen_on=1,usage_access=1,foreground_package='test.example'")
+        val before = backup(db)
+        val focused = db.historySummary(31000,chargingFocus=true)
+        assertTrue(focused.contains("MOST RECENT CHARGING SESSION"))
+        assertTrue(focused.contains("30% → 31%"))
+        assertFalse(focused.contains("Foreground app time"))
+        assertFalse(focused.contains("DEVICE RESOURCE HISTORY"))
+        assertFalse(focused.contains("test.example"))
+        assertFalse(focused.contains("Average battery-side charge rate from counter"))
+        assertFalse(focused.contains("Charge-counter observed interval rate:"))
+        assertArrayEquals(before,backup(db))
+    }
+
     @Test fun exactOverlapRecoveryPreservesDuplicatesAndRejectsConflictsAtomically() = database { source ->
         sample(source,1000,100,70)
         sample(source,2000,200,69)

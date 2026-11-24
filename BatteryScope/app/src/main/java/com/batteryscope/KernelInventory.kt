@@ -84,7 +84,10 @@ internal object KernelInventory {
         }
     }
 
-    fun scan(maxFields: Int = 900, maxEntries: Int = 6000, maxWorkMs: Long = 2_000L): Map<String,String> {
+    val chargingRoots = roots.filter { it.name in setOf("power_supply","typec","usb_power_delivery","dual_role_usb","usb_role","thermal","hwmon") }
+
+    fun scan(maxFields: Int = 900, maxEntries: Int = 6000, maxWorkMs: Long = 2_000L, chargingOnly: Boolean = false): Map<String,String> {
+        val selectedRoots = if (chargingOnly) chargingRoots else roots
         require(maxFields > 0 && maxEntries > 0 && maxWorkMs in 1L..60_000L)
         val result = linkedMapOf<String,String>()
         val started = System.nanoTime()
@@ -93,7 +96,7 @@ internal object KernelInventory {
         var entries = 0
         var capped = false
         var visible = 0
-        for ((index, spec) in roots.withIndex()) {
+        for ((index, spec) in selectedRoots.withIndex()) {
             val root = File(spec.path)
             if (expired() || count >= maxFields || entries >= maxEntries) {
                 result[spec.name + "/@root"] = if (expired()) "NOT_SCANNED_TIME_BUDGET" else "NOT_SCANNED_LIMIT"
@@ -107,7 +110,7 @@ internal object KernelInventory {
             // Reserve capacity for subsequent roots. Power supplies get triple weight;
             // unused budget flows to the remaining roots. The total caps still apply.
             val weight = if (index == 0) 3 else 1
-            val shares = roots.size - index + weight - 1
+            val shares = selectedRoots.size - index + weight - 1
             val rootFieldEnd = count + ((maxFields - count).toLong() * weight / shares).toInt().coerceAtLeast(1)
             val rootEntryEnd = entries + ((maxEntries - entries).toLong() * weight / shares).toInt().coerceAtLeast(1)
             val seen = mutableSetOf<String>()
@@ -162,7 +165,7 @@ internal object KernelInventory {
         result["@scan_work_ms"] = ((System.nanoTime() - started) / 1_000_000L).toString()
         result["@scan_time_budget_ms"] = maxWorkMs.toString()
         result["@scan_time_budget_reached"] = expired().toString()
-        result["@inventory_policy"] = "ALLOWLIST_V2"
+        result["@inventory_policy"] = if (chargingOnly) "CHARGING_ONLY_V1" else "ALLOWLIST_V2"
         return result
     }
 

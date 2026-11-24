@@ -2,14 +2,12 @@ package com.batteryscope
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.AppOpsManager
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.BatteryManager
-import android.os.Process
 import android.os.HandlerThread
 import java.util.concurrent.atomic.AtomicBoolean
 import android.os.Build
@@ -37,7 +35,6 @@ class MainActivity : Activity() {
     private lateinit var monitorText: TextView
     private lateinit var historyText: TextView
     private lateinit var capacityText: TextView
-    private lateinit var deviceText: TextView
     private val historyRefreshGate = RefreshGate(300_000L)
     private val capacityRefreshGate = RefreshGate(0L)
     private lateinit var historyOperationText: TextView
@@ -168,11 +165,10 @@ class MainActivity : Activity() {
         batteryText = addPanel(content, "01  BATTERY TELEMETRY  •  ANDROID FRAMEWORK")
         chargerText = addPanel(content, "02  POWER SUPPLY NODES  •  KERNEL")
         diagnosticText = addPanel(content, "03  ACCESS, SOURCE & DATA QUALITY")
-        historyText = addPanel(content, "04  CHARGE / DISCHARGE HISTORY & APP USAGE")
+        historyText = addPanel(content, "04  CHARGING / DISCHARGING SESSIONS")
         historyText.text = "Recorder starts automatically. Local history accumulates across days, weeks and months."
         capacityText = addPanel(content, "05  BATTERY HEALTH & FULL-CHARGE CAPACITY")
         capacityText.text = "Capacity estimate not available yet. Record several charging/discharging sessions with the recorder enabled."
-        deviceText = addPanel(content, "06  DEVICE RESOURCES  •  PUBLIC ANDROID APIs")
 
         val note = makeText(13f, Color.rgb(155, 170, 191), false).apply {
             text = "Measurement rules: battery current is not USB input current. Only USB/charger supply nodes can report charger-side voltage/current. BatteryScope does not decode the proprietary SuperDart wire handshake, alter the selected USB protocol or write charging controls."
@@ -186,13 +182,6 @@ class MainActivity : Activity() {
         }
         content.addView(refreshButton, LinearLayout.LayoutParams(-1, -2))
 
-        content.addView(makeText(13f, Color.rgb(155, 170, 191), false).apply {
-            text = "Optional Usage Access permits local package-transition history and sampled app correlation. Imports look back up to 24 hours, with no activity names or content. Existing history stays local and access can be revoked in Android Settings."
-        })
-        val usageButton = Button(this).apply {
-            text = "Enable app usage tracking"
-            setOnClickListener { openUsageAccessSettings() }
-        }
         val exportButton = Button(this).apply {
             text = "Prepare CSV history"
             setOnClickListener {
@@ -203,7 +192,6 @@ class MainActivity : Activity() {
                     .setPositiveButton("Prepare") { _, _ -> exportRecorderHistory() }.show()
             }
         }
-        content.addView(usageButton, LinearLayout.LayoutParams(-1, -2))
         content.addView(exportButton, LinearLayout.LayoutParams(-1, -2))
         val backupButton = Button(this).apply {
             text = "Prepare portable history backup"
@@ -326,7 +314,6 @@ class MainActivity : Activity() {
             lines += "Kernel class-root access results:"
             rootChecks.toSortedMap().forEach { (key, value) -> lines += "  $key = $value" }
         }
-        lines += "Foreground-app attribution permission: " + if (hasUsageAccessNow()) "GRANTED; foreground-time correlation available" else "NOT GRANTED; app-specific foreground correlation unavailable"
         lines += "Battery sampling source: ACTION_BATTERY_CHANGED + BatteryManager public properties; unavailable sentinels are retained as unavailable"
         val keepAwake = getSharedPreferences(BatteryRecorderService.PREFS, MODE_PRIVATE)
             .getBoolean(BatteryRecorderService.KEY_KEEP_CPU_AWAKE, true)
@@ -500,15 +487,6 @@ class MainActivity : Activity() {
             else String.format(Locale.US, "%.3f %s", value, unit)
         }
 
-        val resourceReport = buildString {
-            val captured = reading.supplies["@device/captured_elapsed_ms"]?.toLongOrNull()
-            if (captured != null) appendLine("Snapshot age: " + ((android.os.SystemClock.elapsedRealtime()-captured).coerceAtLeast(0L)/1000) + " seconds")
-            appendLine("Network counters are cumulative bytes since boot, not battery energy or instantaneous speed.")
-            appendLine("CPU processor count is runtime availability, not a utilization reading. Sensor list is inventory only.")
-            reading.supplies.filterKeys { it.startsWith("@device/") }.toSortedMap().forEach { (key,value) ->
-                appendLine(key.removePrefix("@device/") + ": " + value)
-            }
-        }
         val statusReport = "${reading.status}   •   ${reading.percent?.let { "$it%" } ?: "--"}   •   POWER SOURCE: ${reading.plugged}"
         val grouped = reading.supplies.entries.groupBy { KernelPresentation.group(it.key, reading.supplies) }
         val gauge = KernelGauge.select(reading.supplies, "power_supply/")
@@ -532,7 +510,10 @@ class MainActivity : Activity() {
             appendLine("Battery voltage: $voltageSummary")
             appendLine("Battery current: $currentSummary")
             appendLine("Battery-side power estimate: ${format(estimatedBatteryPowerW, "W")} (signed; battery side only)")
-            appendLine("Charger-input power: Unavailable — no verified USB-side voltage/current pair")
+            appendLine("Charger-input voltage / current / power: Unavailable — no verified calibrated USB-side measurement")
+            appendLine("Advertised maximum voltage: " + format(reading.maxChargingVoltageUv?.div(1_000_000.0), "V") + " (limit, not live)")
+            appendLine("Advertised maximum current: " + format(reading.maxChargingCurrentUa?.div(1000.0), "mA") + " (limit, not live)")
+            appendLine("SuperDart / VOOC active mode: unverified; Android AC status alone does not identify fast charging.")
             appendLine("Temperature: ${format(reading.temperatureC, "°C")}")
         }
 
@@ -545,10 +526,7 @@ class MainActivity : Activity() {
                 KernelPresentation.Group.EXTERNAL to "External power-supply nodes",
                 KernelPresentation.Group.BATTERY to "Battery / BMS nodes",
                 KernelPresentation.Group.USB_INTERFACE to "USB-C / PD / role attributes (raw)",
-                KernelPresentation.Group.THERMAL to "Thermal / hwmon (raw)",
-                KernelPresentation.Group.COMPUTE to "CPU / devfreq (raw)",
-                KernelPresentation.Group.USB_DEVICE to "USB device inventory (raw)",
-                KernelPresentation.Group.OTHER to "Other inventory attributes (raw)"
+                KernelPresentation.Group.THERMAL to "Thermal / hwmon (raw; sensor identity unverified)"
             )
             for ((group,label) in sections) {
                 appendLine()
@@ -593,7 +571,6 @@ class MainActivity : Activity() {
                 batteryText.text = batteryReport
                 chargerText.text = chargerReport
                 diagnosticText.text = diagnosticReport
-                deviceText.text = resourceReport
                 refreshHistoryDisplay(false)
             }
         }
@@ -608,24 +585,13 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun hasUsageAccessNow(): Boolean = try {
-        val ops = getSystemService(APP_OPS_SERVICE) as AppOpsManager
-        val mode = if (Build.VERSION.SDK_INT >= 29) {
-            ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
-        } else {
-            @Suppress("DEPRECATION")
-            ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName)
-        }
-        mode == AppOpsManager.MODE_ALLOWED
-    } catch (_: Throwable) { false }
-
     /** Monitoring is automatic: every foreground app launch repairs a missing recorder request. */
     private fun ensureRecorderRunning() {
         try {
             val intent = Intent(this, BatteryRecorderService::class.java)
                 .setAction(BatteryRecorderService.ACTION_START)
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
-            monitorText.text = "Automatic device monitoring requested • awaiting recorder confirmation"
+            monitorText.text = "Automatic battery monitoring requested • awaiting recorder confirmation"
             if (Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), NOTIFICATION_REQUEST_CODE)
@@ -676,14 +642,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun openUsageAccessSettings() {
-        try {
-            startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-        } catch (t: Throwable) {
-            statusText.text = "Could not open Usage Access settings: " + (t.message ?: "unknown")
-        }
-    }
-
     private fun openBatteryOptimisationSettings() {
         try {
             startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
@@ -702,7 +660,7 @@ class MainActivity : Activity() {
             var database: RecorderDatabase? = null
             val result = try {
                 database = RecorderDatabase(applicationContext)
-                database.historySummary(now)
+                database.historySummary(now, chargingFocus = true)
             } catch (t: Throwable) {
                 "History read failed: " + t.javaClass.simpleName + ": " + (t.message ?: "unknown")
             } finally {

@@ -1,5 +1,9 @@
 # BatteryScope changelog
 
+## 2026-11-25 — Charging-first scope (supersedes device-wide expansion)
+
+User requested charging analysis rather than unrelated device telemetry. New recordings and dashboard exclude app tracking, CPU/GPU inventory, general resource snapshots, network statistics and sensors. Remove PACKAGE_USAGE_STATS and ACCESS_NETWORK_STATE declarations; no Internet or privileged access. Only battery properties, charging/power-supply/USB-C role/thermal read-only observations, screen state for charging comparisons, and recorder health remain. Old sample/event columns and existing backup/CSV formats retained; no deletion, including historical resource and app records. Historical reporting helpers remain for compatibility tests; normal UI uses charging-focused report and suppresses counter-derived mA figures that could be mistaken for actual current. Explicitly distinguish advertised maxima, raw flags, actual charger input (unverified) and battery-side estimates. Realme evidence: user supplied old.csv (377 samples) and New.csv (13 samples), zero exported USB pairs or advertised limits in both; all 13 new counters equal SOC times 45000 µAh, raw voltage 3–4 mV, charging current -568 to -330 µA-labelled. No calibration or unsupported rescaling. Thermal zones are not assumed to be battery temperatures. Previous full cumulative CI 45484754741 passed. New Android CI and real-device validation required. No version/schema/signing change. No charging-control writes.
+ 
 ## 2026-11-25 — Bounded public resource inventory (R19 partial)
 
 - Extend low-cadence resource snapshots with display state and current mode configuration, storage volume state/type (no labels/UUIDs/paths), sensor descriptors (max 64, explicit truncation), ABI list, time-zone offset and acquisition completion timestamps. Descriptors are not live sensor measurements. Display configurations are not panel power.
