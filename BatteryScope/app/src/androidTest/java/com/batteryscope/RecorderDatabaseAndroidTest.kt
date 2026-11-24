@@ -170,6 +170,64 @@ class RecorderDatabaseAndroidTest {
         assertTrue(report.contains("80%: 1h 0m estimated total from session start; 30m estimated remaining from last sample"))
     }
 
+    @Test fun walReaderSeesCommittedRowsDuringSeparateWriterTransaction() {
+        val name = name()
+        val writer = RecorderDatabase(context,name)
+        val reader = RecorderDatabase(context,name)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            sample(writer,1000)
+            val writable = writer.writableDatabase
+            assertTrue(writable.isWriteAheadLoggingEnabled)
+            assertTrue(reader.readableDatabase.isWriteAheadLoggingEnabled)
+            assertEquals(1L,number(reader.readableDatabase,"SELECT COUNT(*) FROM samples"))
+            writable.beginTransactionNonExclusive()
+            try {
+                sample(writer,2000)
+                val observed = executor.submit<Long> {
+                    number(reader.readableDatabase,"SELECT COUNT(*) FROM samples")
+                }.get(10,java.util.concurrent.TimeUnit.SECONDS)
+                assertEquals(1L,observed)
+                writable.setTransactionSuccessful()
+            } finally { writable.endTransaction() }
+            assertEquals(2L,number(reader.readableDatabase,"SELECT COUNT(*) FROM samples"))
+            assertEquals(5,writable.version)
+        } finally {
+            executor.shutdownNow()
+            reader.close()
+            writer.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test fun combinedWindowsPreserveIndependentBoundsAndInsertionOrder() = database { db ->
+        val now = 2_000_000_000_000L
+        val day = 86_400_000L
+        // A row outside the narrow window appears between eligible rows.
+        // The previous eligible row must remain independent for each window.
+        sample(db,now - 2 * day,100_000,54)
+        sample(db,now - day,130_000,53)
+        sample(db,now - day - 1,160_000,52)
+        sample(db,now - day + 60_000,190_000,51)
+        sample(db,now,220_000,50)
+        sample(db,now,250_000,49)
+        sample(db,now + 1,280_000,48)
+        val report = db.historySummary(now)
+        fun section(label: String): String = report.substringAfter("=== " + label + " • ").substringBefore("\n===")
+        val narrow = section("24 HOURS")
+        assertTrue(narrow.startsWith("4 samples ==="))
+        assertTrue(narrow.contains("rate-eligible adjacent interval duration 120s"))
+        assertTrue(narrow.contains("Discharging: 0.03 h • -4.00 percentage points"))
+        for (label in listOf("7 DAYS","30 DAYS","90 DAYS","365 DAYS","ALL TIME")) {
+            val broad = section(label)
+            assertTrue(label,broad.startsWith("6 samples ==="))
+            assertTrue(label,broad.contains("rate-eligible adjacent interval duration 150s"))
+            assertTrue(label,broad.contains("Discharging: 0.04 h • -5.00 percentage points"))
+        }
+        assertTrue(report.contains("Stored samples: 7"))
+        assertEquals(7L,number(db.readableDatabase,"SELECT COUNT(*) FROM samples"))
+    }
+
     @Test fun actualAndroidOpenHelperMigratesV4WithoutDroppingRawRecords() {
         val name = name()
         try {

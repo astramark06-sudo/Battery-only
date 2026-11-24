@@ -666,6 +666,12 @@ class BatteryRecorderService : Service() {
 class RecorderDatabase(context: Context, databaseName: String = "batteryscope_history.db") :
     SQLiteOpenHelper(context.applicationContext, databaseName, null, RecorderSchema.VERSION) {
 
+    init {
+        // All handles use the same journal policy, before their first open.
+        // WAL permits readers to observe committed history during a writer transaction.
+        setWriteAheadLoggingEnabled(true)
+    }
+
     override fun onCreate(db: SQLiteDatabase) = RecorderSchema.create { sql -> db.execSQL(sql) }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -779,7 +785,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         val summary = ResourceHistory()
         val from = now - 24L * 60L * 60L * 1000L
         readableDatabase.rawQuery(
-            "SELECT boot_count,power_supply_json FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND power_supply_json IS NOT NULL ORDER BY id",
+            "SELECT boot_count,power_supply_json FROM samples INDEXED BY idx_samples_time WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND power_supply_json IS NOT NULL ORDER BY id",
             windowArgs(from, now, range)
         ).use { cursor ->
             while (cursor.moveToNext()) {
@@ -831,6 +837,9 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             windowArgs(0L, now, range)
         ).use { if (it.moveToFirst()) it.getInt(0) to it.getLong(1) else null }
         val latestPercent = latestReading?.first
+        val summaries = summariseWindows(windows.map { (_, duration) ->
+            if (duration == Long.MAX_VALUE) 0L else now - duration
+        }, now, range)
         return buildString {
             val total = range.count
             appendLine("BATTERYSCOPE LOCAL HISTORY • RAW SAMPLES RETAINED UNTIL USER DELETES APP DATA")
@@ -839,9 +848,9 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             if (latestReading != null) appendLine("Last eligible battery level sample age: " + durationText(now - latestReading.second))
             appendLine("App foreground correlation is not a direct per-app electrical measurement.")
             appendLine("Counter-derived averages may reflect coarse gauge steps (45,000 µAh observed on RMX2161), not instantaneous current. Implausible counter values and interval jumps are excluded from interval averages; raw readings are retained.")
-            for ((label, duration) in windows) {
-                val from = if (duration == Long.MAX_VALUE) 0L else now - duration
-                val stats = summariseSince(from, now, range, duration != Long.MAX_VALUE)
+            for ((index, window) in windows.withIndex()) {
+                val label = window.first
+                val stats = summaries[index]
                 appendLine()
                 appendLine("=== " + label + " • " + stats.count + " samples ===")
                 appendLine("Sampling continuity: " + stats.gapReport)
@@ -943,7 +952,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
     private fun readWindow(from: Long, now: Long, range: SnapshotRange): List<Row> {
         val rows = mutableListOf<Row>()
         readableDatabase.rawQuery(
-            "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id",
+            "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count FROM samples INDEXED BY idx_samples_time WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id",
             windowArgs(from, now, range)
         ).use { c ->
             while (c.moveToNext()) rows += Row(
@@ -983,29 +992,20 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         bucket.counter.add(counter, duration)
     }
 
-    private fun summariseSince(from: Long, now: Long, range: SnapshotRange, finiteWindow: Boolean): Stats {
-        val charge = Bucket(); val drain = Bucket()
-        val chargeOn = Bucket(); val chargeOff = Bucket()
-        val drainOn = Bucket(); val drainOff = Bucket()
-        val pluggedDrain = Bucket(); val pluggedDrainOn = Bucket(); val pluggedDrainOff = Bucket()
-        val appTime = linkedMapOf<String, Long>()
-        val appCharge = linkedMapOf<String, Double>()
-        val appDrain = linkedMapOf<String, Double>()
-        val appPluggedDrain = linkedMapOf<String, Double>()
-        val appChargeCounterMah = linkedMapOf<String, Double>()
-        val appDrainCounterMah = linkedMapOf<String, Double>()
-        val appPluggedDrainCounterMah = linkedMapOf<String, Double>()
-        var count = 0
-        var screenOn = 0
-        var screenOff = 0
-        var previous: Row? = null
-        var earliestWall: Long? = null
-        var latestWall: Long? = null
-        val gap = SamplingGapAccumulator(BatteryRecorderService.SAMPLE_INTERVAL_MS)
+    /**
+     * Decode each eligible row once, in the original insertion order. Each
+     * window keeps its own previous eligible row, including when wall time
+     * moves backwards. This preserves the separate-query interval semantics.
+     */
+    private fun summariseWindows(starts: List<Long>, now: Long, range: SnapshotRange): List<Stats> {
+        require(starts.isNotEmpty())
+        val accumulators = starts.mapIndexed { index, from ->
+            WindowAccumulator(from, now, index != starts.lastIndex)
+        }
         readableDatabase.rawQuery(
             """SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count
                FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id""".trimIndent(),
-            windowArgs(from, now, range)
+            windowArgs(starts.minOrNull() ?: 0L, now, range)
         ).use { cursor ->
             val iTime = cursor.getColumnIndexOrThrow("timestamp_ms")
             val iElapsed = cursor.getColumnIndexOrThrow("elapsed_realtime_ms")
@@ -1028,101 +1028,135 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                     cursor.getString(iApp) ?: "",
                     if (cursor.isNull(iBootCount)) null else cursor.getInt(iBootCount)
                 )
-                count++
-                earliestWall = minOf(earliestWall ?: after.time, after.time)
-                latestWall = maxOf(latestWall ?: after.time, after.time)
-                if (after.screen) screenOn++ else screenOff++
-                val before = previous
-                if (before != null) {
-                    val dt = sampleIntervalMs(before, after)
-                    val eligible = isRateInterval(before, after, dt)
-                    val knownReboot = before.bootCount != null && after.bootCount != null && before.bootCount != after.bootCount
-                    gap.accept(dt, eligible, knownReboot)
-                    if (eligible) {
-                        val sameApp = RecorderTimeMath.sameForegroundApp(before.screen, after.screen, before.app, after.app)
-                        if (sameApp) appTime[after.app] = (appTime[after.app] ?: 0L) + dt
-                        if (before.pct != null && after.pct != null) {
-                            val delta = (after.pct - before.pct).toDouble()
-                            val counterDelta = CounterDelta.forInterval(before.chargeCounter, after.chargeCounter, dt)
-                            val counterGain = CounterDelta.gain(counterDelta)
-                            val counterLoss = CounterDelta.loss(counterDelta)
-                            val bothPlugged = BatteryStateMath.connected(before.plug) && BatteryStateMath.connected(after.plug)
-                            val androidReportsCharging = charging(before) && charging(after)
-                            if ((bothPlugged || androidReportsCharging) && delta < 0.0) {
-                                // Some ROMs report EXTRA_PLUGGED=NONE while BATTERY_STATUS remains CHARGING.
-                                add(pluggedDrain, dt, -delta, counterLoss)
-                                if (before.screen == after.screen) add(if (after.screen) pluggedDrainOn else pluggedDrainOff, dt, -delta, counterLoss)
-                                if (sameApp) {
-                                    appPluggedDrain[after.app] = (appPluggedDrain[after.app] ?: 0.0) - delta
-                                    if (counterLoss != null) appPluggedDrainCounterMah[after.app] =
-                                        (appPluggedDrainCounterMah[after.app] ?: 0.0) + counterLoss / 1000.0
-                                }
-                            } else if (charging(before) && charging(after) && delta >= 0.0) {
-                                add(charge, dt, delta, counterGain)
-                                if (before.screen == after.screen) add(if (after.screen) chargeOn else chargeOff, dt, delta, counterGain)
-                                if (sameApp) {
-                                    appCharge[after.app] = (appCharge[after.app] ?: 0.0) + delta
-                                    if (counterGain != null) appChargeCounterMah[after.app] =
-                                        (appChargeCounterMah[after.app] ?: 0.0) + counterGain / 1000.0
-                                }
-                            } else if (discharging(before) && discharging(after) && !bothPlugged && delta <= 0.0) {
-                                add(drain, dt, -delta, counterLoss)
-                                if (before.screen == after.screen) add(if (after.screen) drainOn else drainOff, dt, -delta, counterLoss)
-                                if (sameApp) {
-                                    appDrain[after.app] = (appDrain[after.app] ?: 0.0) - delta
-                                    if (counterLoss != null) appDrainCounterMah[after.app] =
-                                        (appDrainCounterMah[after.app] ?: 0.0) + counterLoss / 1000.0
-                                }
+                for (accumulator in accumulators) accumulator.accept(after)
+            }
+        }
+        return accumulators.map { it.finish() }
+    }
+
+    private inner class WindowAccumulator(
+        private val from: Long,
+        private val now: Long,
+        private val finiteWindow: Boolean
+    ) {
+        val charge = Bucket(); val drain = Bucket()
+        val chargeOn = Bucket(); val chargeOff = Bucket()
+        val drainOn = Bucket(); val drainOff = Bucket()
+        val pluggedDrain = Bucket(); val pluggedDrainOn = Bucket(); val pluggedDrainOff = Bucket()
+        val appTime = linkedMapOf<String, Long>()
+        val appCharge = linkedMapOf<String, Double>()
+        val appDrain = linkedMapOf<String, Double>()
+        val appPluggedDrain = linkedMapOf<String, Double>()
+        val appChargeCounterMah = linkedMapOf<String, Double>()
+        val appDrainCounterMah = linkedMapOf<String, Double>()
+        val appPluggedDrainCounterMah = linkedMapOf<String, Double>()
+        var count = 0
+        var screenOn = 0
+        var screenOff = 0
+        var previous: Row? = null
+        var earliestWall: Long? = null
+        var latestWall: Long? = null
+        val gap = SamplingGapAccumulator(BatteryRecorderService.SAMPLE_INTERVAL_MS)
+
+        fun accept(after: Row) {
+            if (after.time < from || after.time > now) return
+            count++
+            earliestWall = minOf(earliestWall ?: after.time, after.time)
+            latestWall = maxOf(latestWall ?: after.time, after.time)
+            if (after.screen) screenOn++ else screenOff++
+            val before = previous
+            if (before != null) {
+                val dt = sampleIntervalMs(before, after)
+                val eligible = isRateInterval(before, after, dt)
+                val knownReboot = before.bootCount != null && after.bootCount != null && before.bootCount != after.bootCount
+                gap.accept(dt, eligible, knownReboot)
+                if (eligible) {
+                    val sameApp = RecorderTimeMath.sameForegroundApp(before.screen, after.screen, before.app, after.app)
+                    if (sameApp) appTime[after.app] = (appTime[after.app] ?: 0L) + dt
+                    if (before.pct != null && after.pct != null) {
+                        val delta = (after.pct - before.pct).toDouble()
+                        val counterDelta = CounterDelta.forInterval(before.chargeCounter, after.chargeCounter, dt)
+                        val counterGain = CounterDelta.gain(counterDelta)
+                        val counterLoss = CounterDelta.loss(counterDelta)
+                        val bothPlugged = BatteryStateMath.connected(before.plug) && BatteryStateMath.connected(after.plug)
+                        val androidReportsCharging = charging(before) && charging(after)
+                        if ((bothPlugged || androidReportsCharging) && delta < 0.0) {
+                            // Some ROMs report EXTRA_PLUGGED=NONE while BATTERY_STATUS remains CHARGING.
+                            add(pluggedDrain, dt, -delta, counterLoss)
+                            if (before.screen == after.screen) add(if (after.screen) pluggedDrainOn else pluggedDrainOff, dt, -delta, counterLoss)
+                            if (sameApp) {
+                                appPluggedDrain[after.app] = (appPluggedDrain[after.app] ?: 0.0) - delta
+                                if (counterLoss != null) appPluggedDrainCounterMah[after.app] =
+                                    (appPluggedDrainCounterMah[after.app] ?: 0.0) + counterLoss / 1000.0
+                            }
+                        } else if (charging(before) && charging(after) && delta >= 0.0) {
+                            add(charge, dt, delta, counterGain)
+                            if (before.screen == after.screen) add(if (after.screen) chargeOn else chargeOff, dt, delta, counterGain)
+                            if (sameApp) {
+                                appCharge[after.app] = (appCharge[after.app] ?: 0.0) + delta
+                                if (counterGain != null) appChargeCounterMah[after.app] =
+                                    (appChargeCounterMah[after.app] ?: 0.0) + counterGain / 1000.0
+                            }
+                        } else if (discharging(before) && discharging(after) && !bothPlugged && delta <= 0.0) {
+                            add(drain, dt, -delta, counterLoss)
+                            if (before.screen == after.screen) add(if (after.screen) drainOn else drainOff, dt, -delta, counterLoss)
+                            if (sameApp) {
+                                appDrain[after.app] = (appDrain[after.app] ?: 0.0) - delta
+                                if (counterLoss != null) appDrainCounterMah[after.app] =
+                                    (appDrainCounterMah[after.app] ?: 0.0) + counterLoss / 1000.0
                             }
                         }
                     }
                 }
-                previous = after
             }
+            previous = after
         }
-        fun hours(bucket: Bucket) = bucket.ms / 3_600_000.0
-        fun fmt(value: Double) = String.format(Locale.US, "%.2f", value)
-        fun duration(bucket: Bucket) = fmt(hours(bucket))
-        fun rate(bucket: Bucket) = if (bucket.ms > 0L) fmt(bucket.pct / hours(bucket)) else "n/a"
-        val firstWall = earliestWall
-        val lastWall = latestWall
-        val edges = if (firstWall == null || lastWall == null) "no eligible samples; coverage unavailable"
-            else (if (finiteWindow) "leading unobserved edge " + ((firstWall - from).coerceAtLeast(0L) / 1000L) + "s • " else "") +
-                "latest timestamp age " + ((now - lastWall).coerceAtLeast(0L) / 1000L) + "s"
-        return Stats(
-            count, duration(charge), duration(drain), fmt(charge.pct), fmt(drain.pct), rate(charge), rate(drain),
-            if (charge.counter.observedMs > 0L) fmt(charge.counter.deltaUah / 1000.0) else "n/a", if (drain.counter.observedMs > 0L) fmt(drain.counter.deltaUah / 1000.0) else "n/a",
-            duration(chargeOn), fmt(chargeOn.pct), rate(chargeOn), duration(chargeOff), fmt(chargeOff.pct), rate(chargeOff),
-            duration(drainOn), fmt(drainOn.pct), rate(drainOn), duration(drainOff), fmt(drainOff.pct), rate(drainOff),
-            duration(pluggedDrain), fmt(pluggedDrain.pct), rate(pluggedDrain),
-            duration(pluggedDrainOn), fmt(pluggedDrainOn.pct), rate(pluggedDrainOn),
-            duration(pluggedDrainOff), fmt(pluggedDrainOff.pct), rate(pluggedDrainOff),
-            screenOn, screenOff,
-            appTime.entries.sortedByDescending { it.value }.map {
-                AppMetric(
-                    it.key, it.value,
-                    appCharge[it.key] ?: 0.0,
-                    appDrain[it.key] ?: 0.0,
-                    appPluggedDrain[it.key] ?: 0.0,
-                    appChargeCounterMah[it.key],
-                    appDrainCounterMah[it.key],
-                    appPluggedDrainCounterMah[it.key]
-                )
-            },
-            charge.counter.rateMa()?.let { fmt(it) } ?: "n/a",
-            drain.counter.rateMa()?.let { fmt(it) } ?: "n/a",
-            gap.gaps.toString() + " gaps >90s • estimated uncovered time within long gaps " + durationText(gap.missingMs) +
-                " • longest long gap " + durationText(gap.longestMs) + " • average positive interval " +
-                (gap.averageMs?.let { "$it ms" } ?: "n/a") +
-                " • " + gap.intervalsAtLeastDoubleTarget + " intervals >=60s • " + gap.invalidRateIntervals +
-                " rate-ineligible intervals (" + gap.nonPositiveIntervals + " nonpositive; " + gap.knownReboots + " known reboots)" +
-                " • rate-eligible adjacent interval duration " + (gap.validIntervalMs / 1000L) + "s • " + edges +
-                " (not a continuous coverage percentage; edge times use wall timestamps; gap causes unknown)",
-            "charge " + (charge.counter.observedMs / 1000L) + "s accepted of " + (charge.ms / 1000L) +
-                "s classified • discharge " + (drain.counter.observedMs / 1000L) + "s accepted of " + (drain.ms / 1000L) +
-                "s classified • plugged decline " + (pluggedDrain.counter.observedMs / 1000L) + "s accepted of " +
-                (pluggedDrain.ms / 1000L) + "s classified"
-        )
+
+        fun finish(): Stats {
+            fun hours(bucket: Bucket) = bucket.ms / 3_600_000.0
+            fun fmt(value: Double) = String.format(Locale.US, "%.2f", value)
+            fun duration(bucket: Bucket) = fmt(hours(bucket))
+            fun rate(bucket: Bucket) = if (bucket.ms > 0L) fmt(bucket.pct / hours(bucket)) else "n/a"
+            val firstWall = earliestWall
+            val lastWall = latestWall
+            val edges = if (firstWall == null || lastWall == null) "no eligible samples; coverage unavailable"
+                else (if (finiteWindow) "leading unobserved edge " + ((firstWall - from).coerceAtLeast(0L) / 1000L) + "s • " else "") +
+                    "latest timestamp age " + ((now - lastWall).coerceAtLeast(0L) / 1000L) + "s"
+            return Stats(
+                count, duration(charge), duration(drain), fmt(charge.pct), fmt(drain.pct), rate(charge), rate(drain),
+                if (charge.counter.observedMs > 0L) fmt(charge.counter.deltaUah / 1000.0) else "n/a", if (drain.counter.observedMs > 0L) fmt(drain.counter.deltaUah / 1000.0) else "n/a",
+                duration(chargeOn), fmt(chargeOn.pct), rate(chargeOn), duration(chargeOff), fmt(chargeOff.pct), rate(chargeOff),
+                duration(drainOn), fmt(drainOn.pct), rate(drainOn), duration(drainOff), fmt(drainOff.pct), rate(drainOff),
+                duration(pluggedDrain), fmt(pluggedDrain.pct), rate(pluggedDrain),
+                duration(pluggedDrainOn), fmt(pluggedDrainOn.pct), rate(pluggedDrainOn),
+                duration(pluggedDrainOff), fmt(pluggedDrainOff.pct), rate(pluggedDrainOff),
+                screenOn, screenOff,
+                appTime.entries.sortedByDescending { it.value }.map {
+                    AppMetric(
+                        it.key, it.value,
+                        appCharge[it.key] ?: 0.0,
+                        appDrain[it.key] ?: 0.0,
+                        appPluggedDrain[it.key] ?: 0.0,
+                        appChargeCounterMah[it.key],
+                        appDrainCounterMah[it.key],
+                        appPluggedDrainCounterMah[it.key]
+                    )
+                },
+                charge.counter.rateMa()?.let { fmt(it) } ?: "n/a",
+                drain.counter.rateMa()?.let { fmt(it) } ?: "n/a",
+                gap.gaps.toString() + " gaps >90s • estimated uncovered time within long gaps " + durationText(gap.missingMs) +
+                    " • longest long gap " + durationText(gap.longestMs) + " • average positive interval " +
+                    (gap.averageMs?.let { "$it ms" } ?: "n/a") +
+                    " • " + gap.intervalsAtLeastDoubleTarget + " intervals >=60s • " + gap.invalidRateIntervals +
+                    " rate-ineligible intervals (" + gap.nonPositiveIntervals + " nonpositive; " + gap.knownReboots + " known reboots)" +
+                    " • rate-eligible adjacent interval duration " + (gap.validIntervalMs / 1000L) + "s • " + edges +
+                    " (not a continuous coverage percentage; edge times use wall timestamps; gap causes unknown)",
+                "charge " + (charge.counter.observedMs / 1000L) + "s accepted of " + (charge.ms / 1000L) +
+                    "s classified • discharge " + (drain.counter.observedMs / 1000L) + "s accepted of " + (drain.ms / 1000L) +
+                    "s classified • plugged decline " + (pluggedDrain.counter.observedMs / 1000L) + "s accepted of " +
+                    (pluggedDrain.ms / 1000L) + "s classified"
+            )
+        }
     }
 
     private fun sessionHistoryReport(rows: List<Row>, wantCharge: Boolean, limit: Int): String {

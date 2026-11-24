@@ -1,5 +1,13 @@
 # BatteryScope 1.15 — Measurement and implementation audit
 
+## 2026-11-25 — Database concurrency and one-pass rolling summaries (R12/R13)
+
+- Prior head `3f4559a636bc6cb36de04cec5384745a6c1f2bba`: [Android CI](https://github.com/astramark06-sudo/Battery-only/actions/runs/45475629184) and [signing-policy CI](https://github.com/astramark06-sudo/Battery-only/actions/runs/45475629179) succeeded, including the asynchronous inventory and recorder deadline changes.
+- All RecorderDatabase handles request WAL before opening. A disposable Android test holds an uncommitted writer transaction while a separate helper reads committed rows, then verifies the committed result. WAL allows readers and one writer to overlap; it does not permit multiple concurrent writers or guarantee timely restore/recording.
+- Six rolling summaries now share a single ID-ordered cursor and decode each row once. Independent window accumulators preserve the original wall-time eligibility, per-window previous row, gap and rate calculations, including duplicate timestamps and clock rollback. Added a disposable regression fixture for boundary, future and out-of-order records. Recent-session and 24-hour resource queries explicitly use the existing timestamp index while retaining ORDER BY id. No index or schema migration.
+- The previous desktop [synthetic benchmark](https://github.com/astramark06-sudo/Battery-only/pull/3#issuecomment-7142777427) motivates these changes; it is not a measurement of the new app on the handset. New CI pending. R12/R13 remain partial: writer-vs-writer contention, full report latency and memory on Android, unbounded history and incremental persistent aggregates still require work.
+- No change to application ID, version, signing, permissions, backup/CSV format or retained history. Draft PR remains unmerged. Next: verify current CI, measure report latency on a large disposable fixture, reduce recent-session memory/long-range refresh overhead, then export and lifecycle hardening.
+
 ## 2026-11-25 — Asynchronous inventory and fixed recorder deadlines (R10/R11 follow-up)
 
 - Preserved the newer `66e0cfacf9df12bc3b3ec54df89923c0127937b7` checkpoint, including its recorder health, operation feedback and import-validation changes. No overwrite or merge of the earlier competing implementation.
