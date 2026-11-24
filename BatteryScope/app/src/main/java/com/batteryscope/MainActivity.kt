@@ -33,6 +33,7 @@ class MainActivity : Activity() {
     private lateinit var chargerText: TextView
     private lateinit var diagnosticText: TextView
     private lateinit var statusText: TextView
+    private lateinit var monitorText: TextView
     private lateinit var historyText: TextView
     private lateinit var capacityText: TextView
     private lateinit var deviceText: TextView
@@ -149,6 +150,10 @@ class MainActivity : Activity() {
         }
         content.addView(title)
         content.addView(subtitle)
+        monitorText = makeText(14f, Color.rgb(142, 226, 185), false)
+        monitorText.text = "Monitoring status not yet confirmed"
+        statusText.text = "No operation in progress"
+        content.addView(monitorText)
         content.addView(statusText)
 
         batteryText = addPanel(content, "01  BATTERY TELEMETRY  •  ANDROID FRAMEWORK")
@@ -288,6 +293,16 @@ class MainActivity : Activity() {
         val recorderPrefs = getSharedPreferences(BatteryRecorderService.PREFS, MODE_PRIVATE)
         lines += "Recorder screen-off mode requested: " + if (keepAwake) "continuous (may add app drain)" else "low-impact (screen-off gaps possible)"
         lines += "Last reported wake lock held: " + recorderPrefs.getBoolean(BatteryRecorderService.KEY_WAKE_LOCK_HELD, false) + " (service-reported; not proof of current process liveness)"
+        lines += "Process-local recorder health: " + BatteryRecorderService.liveHealthReport()
+        val lastCommit = recorderPrefs.getLong(BatteryRecorderService.KEY_LAST_SUCCESS_WALL, 0L)
+        lines += "Last reported successful database commit (historical wall time): " +
+            if (lastCommit > 0L) SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(lastCommit)) else "none recorded"
+        recorderPrefs.getString(BatteryRecorderService.KEY_LAST_SAMPLE_FAILURE, null)?.let {
+            lines += "Historical sample failure at " + Date(recorderPrefs.getLong(BatteryRecorderService.KEY_LAST_SAMPLE_FAILURE_AT, 0L)) + ": " + it
+        }
+        recorderPrefs.getString(BatteryRecorderService.KEY_LAST_EVENT_FAILURE, null)?.let {
+            lines += "Historical event-write failure at " + Date(recorderPrefs.getLong(BatteryRecorderService.KEY_LAST_EVENT_FAILURE_AT, 0L)) + ": " + it
+        }
         recorderPrefs.getString(BatteryRecorderService.KEY_START_FAILURE, null)?.let { lines += "Recorder startup failure: " + it }
         val bootResumeFailure = recorderPrefs.getString(BatteryRecorderService.KEY_BOOT_RESUME_FAILURE, null)
         if (!bootResumeFailure.isNullOrBlank()) {
@@ -540,7 +555,7 @@ class MainActivity : Activity() {
 
         runOnUiThread {
             if (!isFinishing && !isDestroyed) {
-                statusText.text = statusReport
+                monitorText.text = statusReport + "\nRecorder: " + BatteryRecorderService.liveHealthReport()
                 batteryText.text = batteryReport
                 chargerText.text = chargerReport
                 diagnosticText.text = diagnosticReport
@@ -615,23 +630,20 @@ class MainActivity : Activity() {
             val intent = Intent(this, BatteryRecorderService::class.java)
                 .setAction(BatteryRecorderService.ACTION_START)
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
-            statusText.text = "Automatic device monitoring requested • local recording • boot resume enabled"
+            monitorText.text = "Automatic device monitoring requested • awaiting recorder confirmation"
             if (Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), NOTIFICATION_REQUEST_CODE)
             }
             handler.postDelayed({
-                val active = getSharedPreferences(BatteryRecorderService.PREFS, MODE_PRIVATE)
-                    .getBoolean(BatteryRecorderService.KEY_ACTIVE, false)
-                statusText.text = if (active) {
-                    "Automatic monitoring active • 30-second battery samples • local history database"
-                } else {
-                    "Monitoring startup is not confirmed. Check diagnostics and Android/Realme background restrictions."
-                }
+                monitorText.text = "Recorder: " + BatteryRecorderService.liveHealthReport()
                 refreshHistoryDisplay(true)
             }, 1200L)
         } catch (t: Throwable) {
-            statusText.text = "AUTOMATIC MONITOR START FAILED: " + t.javaClass.simpleName + ": " + (t.message ?: "unknown")
+            val failure = t.javaClass.simpleName + ": " + (t.message ?: "unknown")
+            monitorText.text = "AUTOMATIC MONITOR START FAILED: " + failure
+            getSharedPreferences(BatteryRecorderService.PREFS, MODE_PRIVATE).edit()
+                .putString(BatteryRecorderService.KEY_START_FAILURE, failure).apply()
         }
         updateSamplingModeButton()
     }
@@ -641,19 +653,20 @@ class MainActivity : Activity() {
         val keepAwake = prefs.getBoolean(BatteryRecorderService.KEY_KEEP_CPU_AWAKE, true)
         val next = !keepAwake
         prefs.edit().putBoolean(BatteryRecorderService.KEY_KEEP_CPU_AWAKE, next).apply()
-        val active = prefs.getBoolean(BatteryRecorderService.KEY_ACTIVE, false)
-        if (active) {
+        if (BatteryRecorderService.isRecorderLive()) {
             try {
                 startService(Intent(this, BatteryRecorderService::class.java).setAction(BatteryRecorderService.ACTION_RECONFIGURE))
             } catch (t: Throwable) {
                 statusText.text = "Sampling mode saved, but recorder reconfiguration failed: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}"
+                updateSamplingModeButton()
+                return
             }
         }
         updateSamplingModeButton()
         statusText.text = if (next) {
-            "Continuous screen-off sampling enabled. CPU wake lock improves sample continuity but increases BatteryScope's own battery use."
+            "Continuous screen-off sampling requested. A held CPU wake lock improves continuity but increases BatteryScope's own battery use. Check recorder diagnostics for actual state."
         } else {
-            "Low-impact sampling enabled. No permanent CPU wake lock; Android may suspend sampling and history will report the resulting gaps."
+            "Low-impact sampling requested. Android may suspend sampling when the wake lock is released; check recorder diagnostics for actual state."
         }
     }
 
@@ -662,9 +675,9 @@ class MainActivity : Activity() {
         val keepAwake = getSharedPreferences(BatteryRecorderService.PREFS, MODE_PRIVATE)
             .getBoolean(BatteryRecorderService.KEY_KEEP_CPU_AWAKE, true)
         samplingModeButton.text = if (keepAwake) {
-            "Sampling mode: CONTINUOUS (wake lock ON) — tap for low-impact"
+            "Requested mode: CONTINUOUS (wake lock requested) — tap for low-impact"
         } else {
-            "Sampling mode: LOW-IMPACT (wake lock OFF) — tap for continuous"
+            "Requested mode: LOW-IMPACT (wake lock off requested) — tap for continuous"
         }
     }
 
