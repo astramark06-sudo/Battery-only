@@ -62,7 +62,7 @@ jobs:
 
       - name: Run JVM unit tests and assemble debug APK
         working-directory: BatteryScope
-        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug
+        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
 
       - name: Verify APK metadata and checksum
         working-directory: BatteryScope
@@ -90,3 +90,67 @@ jobs:
             BatteryScope/apk-signing.txt
           if-no-files-found: warn
           retention-days: 14
+
+  android-instrumentation:
+    name: Android 12L emulator database and restore tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Java 17
+        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # The action's legacy default includes the retired "tools" package.
+          # Request only platform-tools; command-line tools are installed by the action.
+          packages: platform-tools
+
+      - name: Install Android 35 SDK packages
+        run: |
+          # Keep the SDK manager's exit code while avoiding SIGPIPE from yes.
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Install emulator and Android 12L image
+        run: |
+          sdkmanager "emulator" "system-images;android-32;google_apis;x86_64"
+          test -e /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          echo no | avdmanager create avd --force --name batteryscope-ci --package "system-images;android-32;google_apis;x86_64"
+      - name: Boot isolated test emulator
+        run: |
+          "$ANDROID_HOME/emulator/emulator" -avd batteryscope-ci -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -accel on > "$RUNNER_TEMP/batteryscope-emulator.log" 2>&1 &
+          timeout 420 adb wait-for-device
+          timeout 420 bash -c 'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 3; done'
+          adb shell input keyevent 82
+      - name: Run Android instrumentation tests
+        working-directory: BatteryScope
+        run: gradle --no-daemon --stacktrace :app:connectedDebugAndroidTest
+      - name: Upload Android test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BatteryScope-instrumentation-${{ github.sha }}
+          path: |
+            BatteryScope/app/build/reports/androidTests/connected/
+            BatteryScope/app/build/outputs/androidTest-results/connected/
+            ${{ runner.temp }}/batteryscope-emulator.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Stop test emulator
+        if: always()
+        run: adb emu kill || true

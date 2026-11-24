@@ -6,6 +6,44 @@ import org.junit.Test
 
 class BatteryCapacityEstimatorTest {
     @Test
+    fun streamingEstimatorMatchesListWithoutReiteratingInput() {
+        val samples = listOf(
+            CapacitySample(1000L, 1, 40, "CHARGING", "USB", 1_600_000L),
+            CapacitySample(31000L, 1, 50, "CHARGING", "USB", 2_000_000L),
+            CapacitySample(61000L, 1, 60, "CHARGING", "USB", 2_400_000L)
+        )
+        assertEquals(BatteryCapacityEstimator.estimate(samples),
+            BatteryCapacityEstimator.estimateOrdered(samples.asSequence().constrainOnce()))
+    }
+
+    @Test
+    fun detectsNominalCounterPatternAndKeepsConfidenceLow() {
+        val samples = listOf(
+            CapacitySample(1000L, 1, 40, "CHARGING", "USB", 1_800_000L),
+            CapacitySample(31000L, 1, 50, "CHARGING", "USB", 2_250_000L),
+            CapacitySample(61000L, 1, 60, "CHARGING", "USB", 2_700_000L)
+        )
+        val estimate = requireNotNull(BatteryCapacityEstimator.estimate(samples))
+        org.junit.Assert.assertTrue(estimate.nominalCounterMatch)
+        assertEquals("LOW", estimate.confidence)
+    }
+    @Test
+    fun usesMonotonicTimeWhenWallClockMovesBackward() {
+        val samples = listOf(
+            CapacitySample(100000L, 1, 40, "CHARGING", "USB", 1_600_000L, 1000L),
+            CapacitySample(50000L, 1, 60, "CHARGING", "USB", 2_400_000L, 31000L)
+        )
+        assertEquals(4000.0, requireNotNull(BatteryCapacityEstimator.estimate(samples)).capacityMah, 0.001)
+    }
+    @Test
+    fun rejectsCapacityForOppositeSessionDirection() {
+        val samples = listOf(
+            CapacitySample(1000L, 1, 60, "CHARGING", "USB", 2_400_000L),
+            CapacitySample(31000L, 1, 40, "CHARGING", "USB", 1_600_000L)
+        )
+        assertNull(BatteryCapacityEstimator.estimate(samples))
+    }
+    @Test
     fun estimatesCapacityFromChargeAndDischargeSessions() {
         val samples = listOf(
             CapacitySample(1_000L, 1, 40, "CHARGING", "USB", 1_800_000L),

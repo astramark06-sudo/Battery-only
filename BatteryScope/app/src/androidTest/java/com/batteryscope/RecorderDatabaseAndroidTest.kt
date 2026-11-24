@@ -1,0 +1,141 @@
+package com.batteryscope
+
+import android.content.ContentValues
+import android.database.sqlite.SQLiteDatabase
+import androidx.test.platform.app.InstrumentationRegistry
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.StringWriter
+import java.util.UUID
+import org.junit.Assert.*
+import org.junit.Test
+
+/** Disposable randomly named databases; never touch production history. */
+class RecorderDatabaseAndroidTest {
+    private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
+    private fun name() = "test-history-" + UUID.randomUUID() + ".db"
+    private fun <T> database(block: (RecorderDatabase) -> T): T {
+        val name = name()
+        val db = RecorderDatabase(context,name)
+        try { return block(db) } finally { db.close(); context.deleteDatabase(name) }
+    }
+    private fun number(db: SQLiteDatabase, sql: String): Long =
+        db.rawQuery(sql,null).use { c -> assertTrue(c.moveToFirst()); c.getLong(0) }
+    private fun sample(db: RecorderDatabase, wall: Long, elapsed: Long = wall) {
+        db.insertSample(ContentValues().apply {
+            put("timestamp_ms",wall)
+            put("elapsed_realtime_ms",elapsed)
+            put("boot_count",9)
+            put("battery_status","DISCHARGING")
+            put("plug_type","NONE")
+            put("battery_percent",52)
+            put("battery_current_ua",-123456L)
+            put("temperature_c",31.1234567890123)
+            put("screen_on",0)
+            put("usage_access",0)
+            put("power_supply_json","{\"key\":\"Ω\"}")
+            put("technology","")
+            putNull("foreground_package")
+        })
+    }
+    private fun backup(db: RecorderDatabase): ByteArray =
+        ByteArrayOutputStream().also { db.exportBackup(it) }.toByteArray()
+
+    @Test fun portableBackupRoundTripPreservesTypedValuesAndDuplicateTimestamps() = database { source ->
+        sample(source,1000,100)
+        sample(source,1000,200)
+        source.insertEvent(1100,"TEST","Ω\n=raw, quoted \"value\"")
+        val bytes = backup(source)
+        database { target ->
+            assertEquals(HistoryBackup.Counts(2,1),target.restoreBackup(ByteArrayInputStream(bytes)))
+            assertEquals(2L,number(target.readableDatabase,"SELECT COUNT(*) FROM samples WHERE timestamp_ms=1000"))
+            target.readableDatabase.rawQuery("SELECT battery_current_ua,temperature_c,technology,foreground_package,power_supply_json FROM samples ORDER BY id LIMIT 1",null).use {
+                assertTrue(it.moveToFirst())
+                assertEquals(-123456L,it.getLong(0))
+                assertEquals(31.1234567890123,it.getDouble(1),0.0)
+                assertEquals("",it.getString(2))
+                assertTrue(it.isNull(3))
+                assertEquals("{\"key\":\"Ω\"}",it.getString(4))
+            }
+            assertArrayEquals(bytes,backup(target))
+        }
+    }
+
+    @Test fun overlapAndCorruptionRollbackPreviouslyInsertedRows() = database { source ->
+        sample(source,1000)
+        sample(source,3000)
+        source.insertEvent(2000,"TEST","event")
+        val bytes = backup(source)
+        database { target ->
+            sample(target,2500)
+            val before = backup(target)
+            assertTrue(runCatching { target.restoreBackup(ByteArrayInputStream(bytes)) }.isFailure)
+            assertArrayEquals(before,backup(target))
+        }
+        database { target ->
+            sample(target,5000)
+            val before = backup(target)
+            val corrupt = bytes.copyOf().apply { this[lastIndex] = (this[lastIndex].toInt() xor 1).toByte() }
+            assertTrue(runCatching { target.restoreBackup(ByteArrayInputStream(corrupt)) }.isFailure)
+            assertArrayEquals(before,backup(target))
+            assertEquals(HistoryBackup.Counts(2,1),target.restoreBackup(ByteArrayInputStream(bytes)))
+            assertEquals(3L,number(target.readableDatabase,"SELECT COUNT(*) FROM samples"))
+            assertEquals(1000L,number(target.readableDatabase,"SELECT timestamp_ms FROM samples ORDER BY id LIMIT 1"))
+            sample(target,6000)
+            assertEquals(6000L,number(target.readableDatabase,"SELECT timestamp_ms FROM samples ORDER BY id DESC LIMIT 1"))
+        }
+    }
+
+    @Test fun legacyCsvRoundTripAndEmptyExport() = database { source ->
+        val empty = StringWriter()
+        assertEquals(0L,source.exportCsv(empty))
+        sample(source,1000)
+        source.insertEvent(1100,"TEST","quoted \"value\"")
+        val output = StringWriter()
+        assertEquals(2L,source.exportCsv(output))
+        val file = File.createTempFile("legacy-test",".csv",context.cacheDir)
+        try {
+            file.writeText(output.toString())
+            database { target ->
+                sample(target,3000)
+                assertEquals(HistoryBackup.Counts(1,1),target.restoreLegacyCsv(file))
+                assertEquals(2L,number(target.readableDatabase,"SELECT COUNT(*) FROM samples"))
+                assertEquals(-123456L,number(target.readableDatabase,"SELECT battery_current_ua FROM samples ORDER BY id LIMIT 1"))
+            }
+        } finally { file.delete() }
+    }
+
+    @Test fun actualAndroidOpenHelperMigratesV4WithoutDroppingRawRecords() {
+        val name = name()
+        try {
+            context.openOrCreateDatabase(name,0,null).use { db ->
+                db.execSQL("""CREATE TABLE samples (
+                    timestamp_ms INTEGER PRIMARY KEY, elapsed_realtime_ms INTEGER NOT NULL, boot_count INTEGER,
+                    battery_percent INTEGER, battery_status TEXT NOT NULL, plug_type TEXT NOT NULL,
+                    battery_voltage_mv INTEGER,battery_current_ua INTEGER,battery_average_current_ua INTEGER,
+                    max_charging_current_ua INTEGER,max_charging_voltage_uv INTEGER,battery_present INTEGER,
+                    invalid_charger_state INTEGER,battery_cycle_count INTEGER,charge_counter_uah INTEGER,
+                    energy_counter_nwh INTEGER,temperature_c REAL,battery_health TEXT,technology TEXT,
+                    screen_on INTEGER NOT NULL,foreground_package TEXT,usage_access INTEGER NOT NULL,
+                    power_supply_json TEXT,usb_voltage_candidate_uv INTEGER,usb_current_candidate_ua INTEGER
+                )""".trimIndent())
+                db.execSQL("CREATE INDEX idx_samples_time ON samples(timestamp_ms)")
+                db.execSQL("CREATE INDEX idx_samples_state_time ON samples(battery_status,timestamp_ms)")
+                db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT,timestamp_ms INTEGER NOT NULL,event_type TEXT NOT NULL,details TEXT)")
+                db.execSQL("CREATE INDEX idx_events_time ON events(timestamp_ms)")
+                db.execSQL("INSERT INTO samples(timestamp_ms,elapsed_realtime_ms,boot_count,battery_status,plug_type,battery_current_ua,screen_on,usage_access,invalid_charger_state) VALUES(1000,100,9,'DISCHARGING','NONE',-123456,0,0,0)")
+                db.execSQL("INSERT INTO events(timestamp_ms,event_type,details) VALUES(1000,'TEST','original')")
+                db.version = 4
+            }
+            val migrated = RecorderDatabase(context,name)
+            try {
+                assertEquals(5,migrated.writableDatabase.version)
+                assertEquals(-123456L,number(migrated.readableDatabase,"SELECT battery_current_ua FROM samples"))
+                assertEquals(1L,number(migrated.readableDatabase,"SELECT COUNT(*) FROM events WHERE details='original'"))
+                sample(migrated,1000,200)
+                assertEquals(2L,number(migrated.readableDatabase,"SELECT COUNT(*) FROM samples WHERE timestamp_ms=1000"))
+            } finally { migrated.close() }
+        } finally { context.deleteDatabase(name) }
+    }
+}

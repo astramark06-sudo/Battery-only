@@ -9,6 +9,15 @@ import kotlin.math.abs
 internal object RecorderTimeMath {
     private const val UNKNOWN_BOOT_TOLERANCE_MS = 120_000L
 
+    /** Rate estimates must never bridge a known reboot; gap reporting still can. */
+    fun isRateInterval(intervalMs: Long, beforeBootCount: Int?, afterBootCount: Int?): Boolean =
+        intervalMs in 1_000L..90_000L &&
+            (beforeBootCount == null || afterBootCount == null || beforeBootCount == afterBootCount)
+
+    /** Foreground correlation needs matching packages and two interactive endpoints. */
+    fun sameForegroundApp(beforeScreen: Boolean, afterScreen: Boolean, beforeApp: String, afterApp: String): Boolean =
+        beforeScreen && afterScreen && beforeApp.isNotBlank() && beforeApp == afterApp
+
     fun intervalMs(
         beforeWallMs: Long,
         beforeElapsedMs: Long,
