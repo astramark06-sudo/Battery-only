@@ -26,65 +26,70 @@ internal object BatteryCapacityEstimator {
     private const val MIN_SOC_CHANGE_PERCENT = 12
     private const val MAX_SESSION_GAP_MS = 90_000L
 
-    fun estimate(samples: List<CapacitySample>): CapacityEstimate? {
-        if (samples.size < 2) return null
-        val ordered = samples.sortedWith(compareBy<CapacitySample> { it.bootCount ?: Int.MIN_VALUE }
-            .thenBy { it.elapsedRealtimeMs ?: it.timestampMs })
+    fun estimate(samples: List<CapacitySample>): CapacityEstimate? =
+        estimateOrdered(samples.sortedWith(compareBy<CapacitySample> { it.bootCount ?: Int.MIN_VALUE }
+            .thenBy { it.elapsedRealtimeMs ?: it.timestampMs }).asSequence())
+
+    /** Consume already ordered samples once, retaining endpoints rather than entire sessions. */
+    fun estimateOrdered(samples: Sequence<CapacitySample>): CapacityEstimate? {
         val estimates = mutableListOf<Double>()
-        var session = mutableListOf<CapacitySample>()
+        var first: CapacitySample? = null
+        var previous: CapacitySample? = null
+        val nominalLevels = mutableSetOf<Int>()
+        var allPairsNominal = true
 
         fun flush() {
-            if (session.size >= 2) {
-                val first = session.first()
-                val last = session.last()
-                val start = first.percent
-                val end = last.percent
-                val startCharge = first.chargeCounterUah
-                val endCharge = last.chargeCounterUah
-                if (start != null && end != null && startCharge != null && endCharge != null) {
+            val a = first
+            val z = previous
+            if (a != null && z != null && a !== z) {
+                val start = a.percent
+                val end = z.percent
+                val deltaCharge = CounterDelta.between(a.chargeCounterUah, z.chargeCounterUah)
+                if (start != null && end != null && deltaCharge != null) {
                     val deltaPercent = end - start
-                    val deltaCharge = endCharge - startCharge
                     if (abs(deltaPercent) >= MIN_SOC_CHANGE_PERCENT &&
                         ((deltaPercent > 0 && deltaCharge > 0L) || (deltaPercent < 0 && deltaCharge < 0L)) &&
-                        ((mode(first) == "CHARGING" && deltaPercent > 0) || (mode(first) == "DISCHARGING" && deltaPercent < 0))) {
+                        ((mode(a) == "CHARGING" && deltaPercent > 0) || (mode(a) == "DISCHARGING" && deltaPercent < 0))) {
                         val capacityMah = abs(deltaCharge).toDouble() /
                             (abs(deltaPercent).toDouble() / 100.0) / 1000.0
                         if (capacityMah in 1500.0..8000.0) estimates += capacityMah
                     }
                 }
             }
-            session = mutableListOf()
+            first = null
+            previous = null
         }
 
-        for (sample in ordered) {
+        for (sample in samples) {
             val mode = mode(sample)
-            val valid = sample.bootCount != null && sample.percent?.let { it in 1..99 } == true && sample.chargeCounterUah?.let { it >= 0L } == true && mode != null
-            if (!valid) {
+            val percent = sample.percent
+            val counter = sample.chargeCounterUah
+            if (percent != null && percent in 1..99 && counter != null && counter >= 0L) {
+                nominalLevels += percent
+                if (counter != percent.toLong() * 45_000L) allPairsNominal = false
+            }
+            if (sample.bootCount == null || percent == null || percent !in 1..99 ||
+                counter == null || counter < 0L || mode == null) {
                 flush()
                 continue
             }
-            val previous = session.lastOrNull()
-            if (previous != null) {
-                val continuous = previous.bootCount == sample.bootCount &&
-                    mode(previous) == mode &&
-                    (if (sample.elapsedRealtimeMs != null && previous.elapsedRealtimeMs != null)
-                        sample.elapsedRealtimeMs - previous.elapsedRealtimeMs else sample.timestampMs - previous.timestampMs) in 1L..MAX_SESSION_GAP_MS
-                if (!continuous) flush()
+            val prev = previous
+            if (prev != null) {
+                val interval = if (sample.elapsedRealtimeMs != null && prev.elapsedRealtimeMs != null)
+                    sample.elapsedRealtimeMs - prev.elapsedRealtimeMs else sample.timestampMs - prev.timestampMs
+                if (prev.bootCount != sample.bootCount || mode(prev) != mode ||
+                    interval !in 1L..MAX_SESSION_GAP_MS) flush()
             }
-            session += sample
+            if (first == null) first = sample
+            previous = sample
         }
         flush()
         if (estimates.isEmpty()) return null
-
         val sorted = estimates.sorted()
         val median = if (sorted.size % 2 == 1) sorted[sorted.size / 2]
             else (sorted[sorted.size / 2 - 1] + sorted[sorted.size / 2]) / 2.0
         val spread = if (median > 0.0) (sorted.last() - sorted.first()) / median * 100.0 else 100.0
-        val validPairs = samples.filter { it.percent != null && it.chargeCounterUah != null && it.percent in 1..99 && it.chargeCounterUah >= 0L }
-        // Exact nominal-capacity proportionality across several levels is suspicious,
-        // but cannot prove how the OEM computes the counter.
-        val nominalMatch = validPairs.map { it.percent }.distinct().size >= 3 &&
-            validPairs.all { it.chargeCounterUah == it.percent!!.toLong() * 45_000L }
+        val nominalMatch = nominalLevels.size >= 3 && allPairsNominal
         val confidence = when {
             nominalMatch -> "LOW"
             sorted.size >= 5 && spread <= 15.0 -> "HIGH"
@@ -101,8 +106,12 @@ internal object BatteryCapacityEstimator {
         )
     }
 
-    fun report(samples: List<CapacitySample>): String {
-        val estimate = estimate(samples) ?: return buildString {
+    fun report(samples: List<CapacitySample>): String = reportEstimate(estimate(samples))
+
+    fun reportOrdered(samples: Sequence<CapacitySample>): String = reportEstimate(estimateOrdered(samples))
+
+    private fun reportEstimate(result: CapacityEstimate?): String {
+        val estimate = result ?: return buildString {
             appendLine("Current full-charge capacity: Not yet measurable")
             appendLine("Original design capacity: 4,500 mAh")
             appendLine("Method: Android charge-counter change compared with battery-percentage change across continuous sessions.")

@@ -6,6 +6,17 @@ import org.junit.Test
 
 class BatteryCapacityEstimatorTest {
     @Test
+    fun streamingEstimatorMatchesListWithoutReiteratingInput() {
+        val samples = listOf(
+            CapacitySample(1000L, 1, 40, "CHARGING", "USB", 1_600_000L),
+            CapacitySample(31000L, 1, 50, "CHARGING", "USB", 2_000_000L),
+            CapacitySample(61000L, 1, 60, "CHARGING", "USB", 2_400_000L)
+        )
+        assertEquals(BatteryCapacityEstimator.estimate(samples),
+            BatteryCapacityEstimator.estimateOrdered(samples.asSequence().constrainOnce()))
+    }
+
+    @Test
     fun detectsNominalCounterPatternAndKeepsConfidenceLow() {
         val samples = listOf(
             CapacitySample(1000L, 1, 40, "CHARGING", "USB", 1_800_000L),

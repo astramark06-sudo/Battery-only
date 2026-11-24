@@ -4,6 +4,7 @@ import android.app.AppOpsManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
@@ -91,48 +92,59 @@ class BatteryRecorderService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_RECONFIGURE) {
-            if (recorderRunning) {
-                val keepAwake = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_KEEP_CPU_AWAKE, true)
-                if (keepAwake) acquireSamplingWakeLock() else releaseSamplingWakeLock()
-                startAsForeground()
-                event("SAMPLING_MODE_CHANGED", if (keepAwake) "Continuous sampling: partial CPU wake lock enabled" else "Low-impact sampling: partial CPU wake lock released; screen-off gaps may occur")
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val wasRunning = recorderRunning
+        val keepAwake = prefs.getBoolean(KEY_KEEP_CPU_AWAKE, true)
+        try {
+            // Every start path, including a stale preference causing RECONFIGURE,
+            // must establish the foreground service before doing any other work.
+            startAsForeground()
+            if (keepAwake) acquireSamplingWakeLock() else releaseSamplingWakeLock()
+            val held = samplingWakeLock?.isHeld == true
+            startAsForeground()
+            prefs.edit().putBoolean(KEY_ACTIVE, true).putBoolean(KEY_USER_ENABLED, true)
+                .putBoolean(KEY_WAKE_LOCK_HELD, held)
+                .remove(KEY_BOOT_RESUME_FAILURE).remove(KEY_BOOT_RESUME_FAILURE_AT)
+                .remove(KEY_START_FAILURE).apply()
+            if (!wasRunning) {
+                recorderRunning = true
+                event(if (intent == null) "RECORDER_RESTARTED" else "RECORDER_STARTED",
+                    "Foreground recorder; 30-second target; wake lock requested=$keepAwake held=$held")
+                handler.removeCallbacks(sampler)
+                if (!handler.post(sampler)) throw IllegalStateException("Recorder worker not accepting samples")
+            } else if (intent?.action == ACTION_RECONFIGURE) {
+                event("SAMPLING_MODE_CHANGED", "Continuous mode requested=$keepAwake; CPU wake lock held=$held")
             }
             return START_STICKY
-        }
-        if (recorderRunning) {
-            startAsForeground()
-            return START_STICKY
-        }
-        try {
-            startAsForeground()
-            recorderRunning = true
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putBoolean(KEY_ACTIVE, true).putBoolean(KEY_USER_ENABLED, true)
-                .remove(KEY_BOOT_RESUME_FAILURE).remove(KEY_BOOT_RESUME_FAILURE_AT).apply()
-            val keepAwake = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_KEEP_CPU_AWAKE, true)
-            if (keepAwake) acquireSamplingWakeLock() else releaseSamplingWakeLock()
-            event(if (intent == null) "RECORDER_RESTARTED" else "RECORDER_STARTED",
-                "Foreground recorder; 30-second target sampling; partial CPU wake lock=" + keepAwake + " (enabled mode adds app power use)")
-            handler.removeCallbacks(sampler)
-            handler.post(sampler)
         } catch (t: Throwable) {
             recorderRunning = false
-            event("RECORDER_START_FAILED", t.javaClass.simpleName + ": " + (t.message ?: "unknown"))
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putBoolean(KEY_ACTIVE, false).putBoolean(KEY_USER_ENABLED, false).apply()
-            stopSelf()
+            handler.removeCallbacks(sampler)
+            releaseSamplingWakeLock()
+            val failure = t.javaClass.simpleName + ": " + (t.message ?: "unknown")
+            event("RECORDER_START_FAILED", failure)
+            prefs.edit().putBoolean(KEY_ACTIVE, false).putBoolean(KEY_WAKE_LOCK_HELD, false)
+                .putString(KEY_START_FAILURE, failure).apply()
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
-        return START_STICKY
     }
 
     private fun startAsForeground() {
+        val requested = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_KEEP_CPU_AWAKE, true)
+        val held = samplingWakeLock?.isHeld == true
+        val status = when {
+            held -> "30-second target • CPU wake lock held • adds app drain"
+            requested -> "30-second target • wake lock requested but not held"
+            else -> "30-second target • wake lock off • screen-off gaps possible"
+        }
+        val openApp = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setContentTitle("BatteryScope is recording")
-            .setContentText(if (getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_KEEP_CPU_AWAKE, true))
-                "30-second sampling • CPU wake lock ON • adds app drain"
-            else "30-second target • CPU wake lock OFF • screen-off gaps possible")
+            .setContentText(status)
+            .setContentIntent(openApp)
+            .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .build()
@@ -272,10 +284,10 @@ class BatteryRecorderService : Service() {
         }
         val screenOn = (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
         val activeApp = updateForegroundPackage(now)
-        val refreshSysfs = now - lastSysfsReadMs >= SYSFS_INTERVAL_MS
+        val refreshSysfs = lastSysfsReadMs == 0L || elapsed - lastSysfsReadMs >= SYSFS_INTERVAL_MS
         if (refreshSysfs) {
             lastSysfsJson = readHardwareTrees()
-            lastSysfsReadMs = now
+            lastSysfsReadMs = elapsed
         }
         val usb = findUsbCandidate(lastSysfsJson)
         val row = ContentValues().apply {
@@ -541,7 +553,7 @@ class BatteryRecorderService : Service() {
         handler.removeCallbacks(sampler)
         releaseSamplingWakeLock()
         if (receiverRegistered) try { unregisterReceiver(receiver) } catch (_: Throwable) { }
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_ACTIVE, false).apply()
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_ACTIVE, false).putBoolean(KEY_WAKE_LOCK_HELD, false).apply()
         // Drain already-queued event/sample work before closing SQLite. Closing
         // the database here on the main thread could block while a write is active.
         val closeDatabase = Runnable {
@@ -567,6 +579,8 @@ class BatteryRecorderService : Service() {
         const val KEY_ACTIVE = "recorder_active"
         const val KEY_USER_ENABLED = "recorder_user_enabled"
         const val KEY_KEEP_CPU_AWAKE = "keep_cpu_awake"
+        const val KEY_WAKE_LOCK_HELD = "wake_lock_held"
+        const val KEY_START_FAILURE = "recorder_start_failure"
         const val KEY_BOOT_RESUME_FAILURE = "boot_resume_failure"
         const val KEY_BOOT_RESUME_FAILURE_AT = "boot_resume_failure_at"
         const val ACTION_RECONFIGURE = "com.batteryscope.action.RECONFIGURE_RECORDER"
@@ -633,11 +647,10 @@ class RecorderDatabase(context: Context) :
 
 
     fun capacityEstimateReport(nowMs: Long = System.currentTimeMillis()): String {
-        val samples = mutableListOf<CapacitySample>()
         val from = nowMs - 90L * 24L * 60L * 60L * 1000L
-        readableDatabase.rawQuery(
+        val empiricalReport = readableDatabase.rawQuery(
             """SELECT timestamp_ms,elapsed_realtime_ms,boot_count,battery_percent,battery_status,plug_type,charge_counter_uah
-               FROM samples WHERE timestamp_ms>=? ORDER BY timestamp_ms""".trimIndent(),
+               FROM samples WHERE timestamp_ms>=? ORDER BY boot_count,elapsed_realtime_ms,timestamp_ms""".trimIndent(),
             arrayOf(from.toString())
         ).use { cursor ->
             val time = cursor.getColumnIndexOrThrow("timestamp_ms")
@@ -647,8 +660,8 @@ class RecorderDatabase(context: Context) :
             val status = cursor.getColumnIndexOrThrow("battery_status")
             val plug = cursor.getColumnIndexOrThrow("plug_type")
             val counter = cursor.getColumnIndexOrThrow("charge_counter_uah")
-            while (cursor.moveToNext()) {
-                samples += CapacitySample(
+            BatteryCapacityEstimator.reportOrdered(sequence {
+                while (cursor.moveToNext()) yield(CapacitySample(
                     timestampMs = cursor.getLong(time),
                     bootCount = if (cursor.isNull(boot)) null else cursor.getInt(boot),
                     percent = if (cursor.isNull(percent)) null else cursor.getInt(percent),
@@ -656,10 +669,9 @@ class RecorderDatabase(context: Context) :
                     plug = cursor.getString(plug) ?: "NONE",
                     chargeCounterUah = if (cursor.isNull(counter)) null else cursor.getLong(counter),
                     elapsedRealtimeMs = cursor.getLong(elapsed)
-                )
-            }
+                ))
+            })
         }
-        val empiricalReport = BatteryCapacityEstimator.report(samples)
         val latestHardwareJson = readableDatabase.rawQuery(
             "SELECT power_supply_json FROM samples WHERE power_supply_json IS NOT NULL ORDER BY timestamp_ms DESC LIMIT 1",
             null

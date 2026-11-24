@@ -37,6 +37,7 @@ class MainActivity : Activity() {
     private lateinit var capacityText: TextView
     private var historyUpdatedAtMs = 0L
     private var historyLoadInFlight = false
+    private var capacityLoadInFlight = false
     private var exportInFlight = false
     private lateinit var samplingModeButton: Button
     private var cachedSupplyNodes: Map<String, String> = emptyMap()
@@ -264,7 +265,7 @@ class MainActivity : Activity() {
 
     /** Enumerates read-only kernel power, USB-C, PD, thermal and hwmon class attributes. */
     private fun readSupplyNodes(): Pair<Map<String, String>, Boolean> {
-        val now = System.currentTimeMillis()
+        val now = android.os.SystemClock.elapsedRealtime()
         // BatteryManager refreshes on the dashboard cadence; sysfs traversal is separately cached.
         if (supplyScanCompletedAtMs > 0L && now >= supplyScanCompletedAtMs &&
             now - supplyScanCompletedAtMs < SYSFS_UI_REFRESH_MS) {
@@ -336,7 +337,7 @@ class MainActivity : Activity() {
         }
         cachedSupplyNodes = result
         cachedSupplyRootVisible = powerSupplyRootVisible
-        supplyScanCompletedAtMs = now
+        supplyScanCompletedAtMs = android.os.SystemClock.elapsedRealtime()
         return result to powerSupplyRootVisible
     }
 
@@ -353,8 +354,10 @@ class MainActivity : Activity() {
         lines += "Battery sampling source: ACTION_BATTERY_CHANGED + BatteryManager public properties; unavailable sentinels are retained as unavailable"
         val keepAwake = getSharedPreferences(BatteryRecorderService.PREFS, MODE_PRIVATE)
             .getBoolean(BatteryRecorderService.KEY_KEEP_CPU_AWAKE, true)
-        lines += "Recorder screen-off mode: " + if (keepAwake) "continuous CPU wake lock enabled (more complete sampling; adds app drain)" else "low-impact mode; CPU may suspend and create screen-off gaps"
         val recorderPrefs = getSharedPreferences(BatteryRecorderService.PREFS, MODE_PRIVATE)
+        lines += "Recorder screen-off mode requested: " + if (keepAwake) "continuous (may add app drain)" else "low-impact (screen-off gaps possible)"
+        lines += "Last reported wake lock held: " + recorderPrefs.getBoolean(BatteryRecorderService.KEY_WAKE_LOCK_HELD, false) + " (service-reported; not proof of current process liveness)"
+        recorderPrefs.getString(BatteryRecorderService.KEY_START_FAILURE, null)?.let { lines += "Recorder startup failure: " + it }
         val bootResumeFailure = recorderPrefs.getString(BatteryRecorderService.KEY_BOOT_RESUME_FAILURE, null)
         if (!bootResumeFailure.isNullOrBlank()) {
             val failedAt = recorderPrefs.getLong(BatteryRecorderService.KEY_BOOT_RESUME_FAILURE_AT, 0L)
@@ -743,8 +746,9 @@ class MainActivity : Activity() {
     private fun refreshHistoryDisplay(force: Boolean) {
         if (!::historyText.isInitialized || historyLoadInFlight) return
         val now = System.currentTimeMillis()
-        if (!force && now - historyUpdatedAtMs < 300_000L) return
-        historyUpdatedAtMs = now
+        val elapsed = android.os.SystemClock.elapsedRealtime()
+        if (!force && historyUpdatedAtMs > 0L && elapsed - historyUpdatedAtMs < 300_000L) return
+        historyUpdatedAtMs = elapsed
         refreshCapacityDisplay()
         historyLoadInFlight = true
         Thread {
@@ -759,14 +763,15 @@ class MainActivity : Activity() {
             }
             runOnUiThread {
                 historyLoadInFlight = false
-                if (!isFinishing && ::historyText.isInitialized) historyText.text = result
+                if (!isFinishing && !isDestroyed && ::historyText.isInitialized) historyText.text = result
             }
         }.start()
     }
 
 
     private fun refreshCapacityDisplay() {
-        if (!::capacityText.isInitialized) return
+        if (!::capacityText.isInitialized || capacityLoadInFlight) return
+        capacityLoadInFlight = true
         Thread {
             val report = try {
                 val database = RecorderDatabase(applicationContext)
@@ -775,7 +780,8 @@ class MainActivity : Activity() {
                 "Capacity estimate failed: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}"
             }
             runOnUiThread {
-                if (!isFinishing && ::capacityText.isInitialized) capacityText.text = report
+                capacityLoadInFlight = false
+                if (!isFinishing && !isDestroyed && ::capacityText.isInitialized) capacityText.text = report
             }
         }.start()
     }
