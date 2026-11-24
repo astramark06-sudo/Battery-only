@@ -1,5 +1,12 @@
 # BatteryScope 1.15 — Measurement and implementation audit
 
+## 2026-11-25 — Root-aware kernel presentation, candidate freshness and display compatibility (R27/R28/R34/R35 partial)
+
+- Prior staging recovery head `a3247fa7e2f2969b86a11be0597bdacae394209d`: Android build/JVM and emulator instrumentation test steps succeeded in [run 45479251876](https://github.com/astramark06-sudo/Battery-only/actions/runs/45479251876); signing policy succeeded.
+- Dashboard now keeps full inventory root prefixes, groups supply/battery, role, thermal, compute and USB-device data separately, labels vendor values raw, and labels standard-unit conversions conditional. No vendor enum inference or live USB wattage claim. Shared USB candidate assessment requires known acquisition-start age, recent inventory, wired framework plug, one plausible same-supply online USB pair, and rejects ambiguity. Stored inventory metadata includes candidate quality and source; old raw fields remain intact. This is a conservative cached correlation, not proof of simultaneous acquisition or calibrated charging input. Gauge report displays historical acquisition time and apparent wall-clock age.
+- Android 15+ root applies system-bar and display-cutout insets, without adding those insets to earlier fitted layouts. Density-independent padding, larger section labels/body text, accessibility headings on API 28+, full-width history buttons and actual Build.MODEL/OS subtitle. Based on https://developer.android.com/develop/ui/views/layout/edge-to-edge. API 35 visual verification, large-font and TalkBack tests remain required; no full dashboard redesign.
+- Added two JVM tests for root collision, raw-only fields, stale/missing capture, incompatible plug, unique/ambiguous candidates. New Android CI required. No schema/version/signing/permissions changes, no history deletion or charging-control writes. PR stays draft.
+
 ## 2026-11-25 — Explicit staging recovery and Android transfer regression (R24 follow-up)
 
 - Prior head `d85c12ad428b34c0e7039ee3385ba72ce23b7af4` passed [Android CI](https://github.com/astramark06-sudo/Battery-only/actions/runs/45478239043) and signing-policy CI. Latest changes distinguish exact atomically published UUID filenames, older directly-written copies of unknown completeness, and interrupted .part files. No staging files are automatically deleted by discovery.

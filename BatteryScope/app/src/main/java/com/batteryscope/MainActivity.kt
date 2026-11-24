@@ -16,7 +16,8 @@ import android.os.Build
 import android.provider.Settings
 import android.os.Bundle
 import android.net.Uri
-import android.view.Gravity
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -126,15 +127,16 @@ class MainActivity : Activity() {
     }
 
     private fun buildUi() {
+        val margin = dp(12)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(18, 18, 18, 18)
+            setPadding(margin, margin, margin, margin)
             setBackgroundColor(Color.rgb(8, 13, 22))
         }
         val scroll = ScrollView(this)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, 18)
+            setPadding(0, 0, 0, dp(12))
         }
 
         val title = TextView(this).apply {
@@ -144,13 +146,13 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
         }
         val subtitle = TextView(this).apply {
-            text = "POWER PATH & BATTERY ANALYSER  •  RMX2161"
-            textSize = 10f
+            text = "POWER PATH & BATTERY ANALYSER  •  " + Build.MODEL + " • Android " + Build.VERSION.RELEASE
+            textSize = 12f
             setTextColor(Color.rgb(143, 163, 190))
-            setPadding(1, 4, 1, 16)
+            setPadding(dp(1), dp(4), dp(1), dp(12))
         }
         statusText = makeText(15f, Color.rgb(142, 226, 185), false).apply {
-            setPadding(14, 14, 14, 14)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
         }
         content.addView(title)
         content.addView(subtitle)
@@ -171,9 +173,9 @@ class MainActivity : Activity() {
         capacityText.text = "Capacity estimate not available yet. Record several charging/discharging sessions with the recorder enabled."
         deviceText = addPanel(content, "06  DEVICE RESOURCES  •  PUBLIC ANDROID APIs")
 
-        val note = makeText(11f, Color.rgb(155, 170, 191), false).apply {
+        val note = makeText(13f, Color.rgb(155, 170, 191), false).apply {
             text = "Measurement rules: battery current is not USB input current. Only USB/charger supply nodes can report charger-side voltage/current. BatteryScope does not decode the proprietary SuperDart wire handshake, alter the selected USB protocol or write charging controls."
-            setPadding(2, 12, 2, 16)
+            setPadding(dp(2), dp(10), dp(2), dp(12))
         }
         content.addView(note)
 
@@ -183,10 +185,6 @@ class MainActivity : Activity() {
         }
         content.addView(refreshButton, LinearLayout.LayoutParams(-1, -2))
 
-        val historyButtons = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
         val usageButton = Button(this).apply {
             text = "Enable app usage tracking"
             setOnClickListener { openUsageAccessSettings() }
@@ -201,9 +199,8 @@ class MainActivity : Activity() {
                     .setPositiveButton("Prepare") { _, _ -> exportRecorderHistory() }.show()
             }
         }
-        historyButtons.addView(usageButton, LinearLayout.LayoutParams(0, -2, 1f))
-        historyButtons.addView(exportButton, LinearLayout.LayoutParams(0, -2, 1f))
-        content.addView(historyButtons)
+        content.addView(usageButton, LinearLayout.LayoutParams(-1, -2))
+        content.addView(exportButton, LinearLayout.LayoutParams(-1, -2))
         val backupButton = Button(this).apply {
             text = "Prepare portable history backup"
             setOnClickListener {
@@ -246,15 +243,29 @@ class MainActivity : Activity() {
 
         scroll.addView(content)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        // API 35+ targets edge-to-edge by default. Keep all controls inside
+        // system bar and cutout insets; don't add them to older fitted layouts.
+        if (Build.VERSION.SDK_INT >= 35) {
+            window.insetsController?.setSystemBarsAppearance(0,
+                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS)
+            root.setOnApplyWindowInsetsListener { view, insets ->
+                val safe = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                view.setPadding(margin + safe.left, margin + safe.top, margin + safe.right, margin + safe.bottom)
+                WindowInsets.CONSUMED
+            }
+        }
         setContentView(root)
+        if (Build.VERSION.SDK_INT >= 35) root.requestApplyInsets()
     }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun makeText(size: Float, color: Int, mono: Boolean): TextView =
         TextView(this).apply {
             textSize = size
             setTextColor(color)
             if (mono) typeface = Typeface.MONOSPACE
-            setPadding(14, 14, 14, 14)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
             setBackgroundColor(Color.rgb(20, 29, 43))
             setTextIsSelectable(true)
         }
@@ -262,12 +273,13 @@ class MainActivity : Activity() {
     private fun addPanel(parent: LinearLayout, heading: String): TextView {
         val label = TextView(this).apply {
             text = heading
-            textSize = 10f
+            textSize = 13f
+            if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
             setTextColor(Color.rgb(123, 177, 242))
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(2, 17, 2, 7)
+            setPadding(dp(2), dp(12), dp(2), dp(5))
         }
-        val body = makeText(12f, Color.rgb(230, 237, 247), true)
+        val body = makeText(14f, Color.rgb(230, 237, 247), true)
         parent.addView(label)
         parent.addView(body)
         return body
@@ -294,17 +306,17 @@ class MainActivity : Activity() {
     /** Enumerates read-only kernel power, USB-C, PD, thermal and hwmon class attributes. */
     private fun readSupplyNodes(): Pair<Map<String, String>, Boolean> {
         val fields = HardwareSnapshotCache.snapshot(applicationContext, SYSFS_UI_REFRESH_MS)
-        return KernelInventory.dashboard(fields) to (fields["power_supply/@root"] == "VISIBLE")
+        return fields to (fields["power_supply/@root"] == "VISIBLE")
     }
 
-    private fun buildMeasurementDiagnosis(nodes: Map<String, String>, powerSupplyRootVisible: Boolean): String {
+    private fun buildMeasurementDiagnosis(nodes: Map<String, String>, powerSupplyRootVisible: Boolean, plug: String): String {
         val lines = mutableListOf<String>()
         lines += "AUTOMATIC MEASUREMENT ACCESS DIAGNOSIS"
         lines += "Power-supply root: " + if (powerSupplyRootVisible) "visible" else "not visible / not enumerable"
-        val rootChecks = nodes.filterKeys { it.startsWith("@diagnostic/") && it.endsWith("/root") }
+        val rootChecks = nodes.filterKeys { it.endsWith("/@root") }
         if (rootChecks.isNotEmpty()) {
             lines += "Kernel class-root access results:"
-            rootChecks.toSortedMap().forEach { (key, value) -> lines += "  ${key.removePrefix("@diagnostic/")} = $value" }
+            rootChecks.toSortedMap().forEach { (key, value) -> lines += "  $key = $value" }
         }
         lines += "Foreground-app attribution permission: " + if (hasUsageAccessNow()) "GRANTED; foreground-time correlation available" else "NOT GRANTED; app-specific foreground correlation unavailable"
         lines += "Battery sampling source: ACTION_BATTERY_CHANGED + BatteryManager public properties; unavailable sentinels are retained as unavailable"
@@ -332,48 +344,28 @@ class MainActivity : Activity() {
         } else {
             lines += "Last automatic boot-resume failure: none recorded"
         }
-        val nonSupplyRoots = KernelInventory.roots.map { it.name }.toSet() - "power_supply"
-        val supplies = nodes.keys.filter { !it.startsWith("@") && it.substringBefore("/") !in nonSupplyRoots }
-            .map { it.substringBefore("/") }.distinct()
-        val external = supplies.filter { it !in listOf("battery", "bms", "main") }
+        val external = KernelPresentation.supplyPaths(nodes).filter {
+            KernelPresentation.group("$it/type",nodes) == KernelPresentation.Group.EXTERNAL
+        }
         lines += "External power-supply entries: " + external.joinToString().ifBlank { "none discovered" }
-        var usbPairFound = false
-        var nonUsbPairFound = false
-        for (name in external) {
-            val base = name + "/"
-            val voltage = nodes[base + "voltage_now"]?.toLongOrNull()
-            val current = nodes[base + "current_now"]?.toLongOrNull()
-            val type = nodes[base + "type"]?.uppercase(Locale.US).orEmpty()
-            val usbSupply = name.contains("usb", ignoreCase = true) || type.contains("USB")
-            lines += "Supply " + name + ": type=" + (nodes[base + "type"] ?: "not exported") +
-                "; online=" + (nodes[base + "online"] ?: "not exported")
-            if (voltage != null && current != null &&
-                voltage in 1_000_000L..30_000_000L && current in -20_000_000L..20_000_000L) {
-                if (usbSupply && nodes[base + "online"] == "1") {
-                    usbPairFound = true
-                    lines += "  USB-source same-supply V/I candidate: " +
-                        String.format(Locale.US, "%.3f V / %.3f A", voltage / 1_000_000.0, current / 1_000_000.0)
-                    lines += "  Candidate USB input power: " +
-                        String.format(Locale.US, "%.3f W", voltage.toDouble() * current.toDouble() / 1.0e12) +
-                        "; source path/driver semantics still require handset validation"
-                } else {
-                    nonUsbPairFound = true
-                    lines += "  Same-supply V/I pair lacks confirmed USB identity or online=1; NOT classified as USB input power."
-                    lines += "  Raw candidate: " + voltage + " µV / " + current + " µA"
-                }
-            } else {
-                lines += "  No plausible same-supply live pair: voltage_now=" +
-                    (nodes[base + "voltage_now"] ?: "NOT EXPORTED") + "; current_now=" +
-                    (nodes[base + "current_now"] ?: "NOT EXPORTED")
-            }
-            val limits = listOf("input_voltage_limit", "input_current_limit", "input_power_limit", "constant_charge_current_max")
-                .mapNotNull { key -> nodes[base + key]?.let { key + "=" + it } }
+        val elapsed = android.os.SystemClock.elapsedRealtime()
+        val age = KernelPresentation.ageMs(nodes["@inventory_started_elapsed_ms"]?.toLongOrNull(),elapsed)
+        lines += "Kernel inventory age from acquisition start: " + (age?.let { (it / 1000).toString() + " s" } ?: "unknown")
+        for (path in external) {
+            lines += "Supply " + path + ": type=" + (nodes["$path/type"] ?: "not exported") +
+                "; online=" + (nodes["$path/online"] ?: "not exported")
+            lines += "  Raw V/I fields: " + (nodes["$path/voltage_now"] ?: "NOT EXPORTED") +
+                " / " + (nodes["$path/current_now"] ?: "NOT EXPORTED")
+            val limits = listOf("input_voltage_limit","input_current_limit","input_power_limit","constant_charge_current_max")
+                .mapNotNull { key -> nodes["$path/$key"]?.let { key + "=" + it } }
             if (limits.isNotEmpty()) lines += "  CONFIGURED LIMITS (not measurements): " + limits.joinToString()
         }
-        if (!usbPairFound) {
-            lines += "USB input V/A/W unavailable as a USB-identified source: no external supply with USB name/type exposed a plausible same-supply voltage_now/current_now pair."
+        val assessment = KernelPresentation.usb(nodes,elapsed,plug,SYSFS_UI_REFRESH_MS)
+        lines += "USB candidate quality: " + assessment.status
+        assessment.candidate?.let {
+            lines += "  Cached same-supply raw candidate: " + it.source + " = " + it.voltageUv + " / " + it.currentUa
+            lines += "  Driver units and time alignment are unverified; not a live charger-input measurement."
         }
-        if (nonUsbPairFound) lines += "At least one external supply exposed a numeric pair without confirmed USB identity or online state; no USB claim was made for it."
         val usb = nodes.filterKeys {
             it.startsWith("typec/") || it.startsWith("usb_power_delivery/") ||
                 it.startsWith("dual_role_usb/") || it.startsWith("usb_role/")
@@ -502,15 +494,8 @@ class MainActivity : Activity() {
             }
         }
         val statusReport = "${reading.status}   •   ${reading.percent?.let { "$it%" } ?: "--"}   •   POWER SOURCE: ${reading.plugged}"
-        val external = reading.supplies.filterKeys { key ->
-            val node = key.substringBefore('/').lowercase(Locale.US)
-            !key.startsWith("@") && node !in listOf("battery", "bms", "main")
-        }
-        val batteryNodes = reading.supplies.filterKeys { key ->
-            val node = key.substringBefore('/').lowercase(Locale.US)
-            node in listOf("battery", "bms", "main")
-        }
-        val gauge = KernelGauge.select(reading.supplies)
+        val grouped = reading.supplies.entries.groupBy { KernelPresentation.group(it.key, reading.supplies) }
+        val gauge = KernelGauge.select(reading.supplies, "power_supply/")
         val kernelCycleCount = gauge?.cycles
         val kernelFullChargeUah = gauge?.fullUah
         val kernelDesignChargeUah = gauge?.designUah
@@ -537,18 +522,30 @@ class MainActivity : Activity() {
 
         val chargerReport = buildString {
             appendLine("App process sysfs access: ${if (reading.supplyRootReadable) "directory listed" else "denied / unavailable"}")
-            appendLine("External power / charger nodes")
-            if (external.isEmpty()) appendLine("No readable external-supply attributes from the ordinary app process.")
-            else external.forEach { (key, value) -> appendLine(formatSupplyValue(key, value)) }
-            appendLine()
-            appendLine("Battery / BMS nodes")
-            if (batteryNodes.isEmpty()) append("No readable battery attributes from the ordinary app process.")
-            else batteryNodes.forEach { (key, value) -> appendLine(formatSupplyValue(key, value)) }
+            val age = KernelPresentation.ageMs(reading.supplies["@inventory_started_elapsed_ms"]?.toLongOrNull(),android.os.SystemClock.elapsedRealtime())
+            appendLine("Cached inventory age: " + (age?.let { (it / 1000).toString() + " s" } ?: "unknown") +
+                " • individual fields may have different acquisition times")
+            val sections = listOf(
+                KernelPresentation.Group.EXTERNAL to "External power-supply nodes",
+                KernelPresentation.Group.BATTERY to "Battery / BMS nodes",
+                KernelPresentation.Group.USB_INTERFACE to "USB-C / PD / role attributes (raw)",
+                KernelPresentation.Group.THERMAL to "Thermal / hwmon (raw)",
+                KernelPresentation.Group.COMPUTE to "CPU / devfreq (raw)",
+                KernelPresentation.Group.USB_DEVICE to "USB device inventory (raw)",
+                KernelPresentation.Group.OTHER to "Other inventory attributes (raw)"
+            )
+            for ((group,label) in sections) {
+                appendLine()
+                appendLine(label)
+                val entries = grouped[group].orEmpty()
+                if (entries.isEmpty()) appendLine("Unavailable / not observed")
+                else entries.forEach { appendLine(KernelPresentation.describe(it.key,it.value,reading.supplies)) }
+            }
         }
 
-        val onlineNodes = reading.supplies.filter { (key, value) ->
+        val onlineNodes = reading.supplies.filter { (key,value) ->
             key.endsWith("/online") && value == "1" &&
-                key.substringBefore('/').lowercase(Locale.US) !in listOf("battery", "bms", "main")
+                KernelPresentation.group(key,reading.supplies) == KernelPresentation.Group.EXTERNAL
         }.keys
         val diagnosticReport = buildString {
             appendLine("Android battery status: ${reading.status}")
@@ -569,7 +566,7 @@ class MainActivity : Activity() {
             appendLine("Kernel FCC/design-capacity pair: ${if (kernelFullChargeUah != null && kernelDesignChargeUah != null) "available; health estimate " + String.format(Locale.US, "%.1f%%", kernelHealthPercent) + " from " + gauge?.source else "unavailable — a readable same-supply charge_full / charge_full_design pair is not available"}")
             appendLine("Control writes: NEVER PERFORMED")
             appendLine()
-            append(buildMeasurementDiagnosis(reading.supplies, reading.supplyRootReadable))
+            append(buildMeasurementDiagnosis(reading.supplies, reading.supplyRootReadable, reading.plugged))
             append("Refresh: ${SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())} • 2-second dashboard refresh")
         }
 
@@ -604,45 +601,6 @@ class MainActivity : Activity() {
         }
         mode == AppOpsManager.MODE_ALLOWED
     } catch (_: Throwable) { false }
-
-    private fun formatSupplyValue(key: String, raw: String): String {
-        val field = key.substringAfter('/')
-        val number = raw.toLongOrNull()
-        val vendorRawOnly = field in setOf(
-            "fastcharger", "fast_chg_type", "voocchg_ing", "charge_technology",
-            "adapter_fw_update", "mmi_charging_enable", "stop_charging_enable",
-            "chargerid_volt", "charger_ic", "usb_status", "typec_cc_orientation", "typec_sbu_voltage"
-        ) || (key.startsWith("battery/") && field == "current_max")
-        val converted = if (vendorRawOnly) null else when (field) {
-            "voltage_now", "voltage_avg", "voltage_max", "voltage_min",
-            "input_voltage_limit", "constant_charge_voltage", "constant_charge_voltage_max", "voltage_limit", "max_voltage" ->
-                number?.let { String.format(Locale.US, "  [%.3f V; raw µV]", it / 1_000_000.0) }
-            "current_now", "current_avg", "current_max", "input_current_limit",
-            "input_current_limit_max", "constant_charge_current", "constant_charge_current_max",
-            "charge_control_limit", "charge_control_limit_max", "current_limit", "max_current" ->
-                number?.let { String.format(Locale.US, "  [%.1f mA; raw µA]", it / 1000.0) }
-            "power_now", "input_power_limit" ->
-                number?.let { String.format(Locale.US, "  [%.3f W; raw µW]", it / 1_000_000.0) }
-            "charge_counter", "charge_now", "charge_full", "charge_full_design" ->
-                number?.let { String.format(Locale.US, "  [%.1f mAh; raw µAh]", it / 1000.0) }
-            "capacity", "charge_control_start_threshold", "charge_control_end_threshold" -> number?.let { "  [$it %]" }
-            else -> null
-        }
-        val annotation = when (field) {
-            "fastcharger" -> "  [vendor boolean; VOOC UI indicator]"
-            "fast_chg_type" -> "  [vendor subtype enum; raw value only]"
-            "mmi_charging_enable" -> "  [vendor state; read only; no write]"
-            "stop_charging_enable" -> "  [vendor state; read only; no write]"
-            "voocchg_ing" -> "  [vendor boolean; VOOC in-progress state]"
-            "charge_technology" -> "  [vendor enum; raw value only]"
-            "adapter_fw_update" -> "  [vendor state; raw value only]"
-            "current_max" -> if (key.startsWith("battery/")) "  [vendor-specific units not assumed]" else (converted ?: "")
-            else -> converted ?: ""
-        }
-        return "$key = $raw$annotation"
-    }
-
-    private fun csvEscape(value: String): String = "\"" + value.replace("\"", "\"\"") + "\""
 
     /** Monitoring is automatic: every foreground app launch repairs a missing recorder request. */
     private fun ensureRecorderRunning() {

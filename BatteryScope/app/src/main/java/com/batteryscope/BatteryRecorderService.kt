@@ -381,7 +381,12 @@ class BatteryRecorderService : Service() {
                 .put("@inventory_associated_sample_elapsed_ms", elapsed)
                 .put("@inventory_associated_sample_wall_ms", now)
         }
-        val usb = inventoryJson?.let { findUsbCandidate(it) }
+        val usbAssessment = inventory?.let { KernelPresentation.usb(it.value, elapsed, plug, SYSFS_INTERVAL_MS) }
+        if (inventoryJson != null && usbAssessment != null) {
+            inventoryJson.put("@usb_candidate_quality", usbAssessment.status)
+            usbAssessment.candidate?.let { inventoryJson.put("@usb_candidate_source", it.source) }
+        }
+        val usb = usbAssessment?.candidate
         val row = ContentValues().apply {
             put("timestamp_ms", now)
             put("elapsed_realtime_ms", elapsed)
@@ -415,8 +420,8 @@ class BatteryRecorderService : Service() {
                 put("power_supply_json", inventoryJson.toString())
             }
             if (usb != null) {
-                put("usb_voltage_candidate_uv", usb.first)
-                put("usb_current_candidate_ua", usb.second)
+                put("usb_voltage_candidate_uv", usb.voltageUv)
+                put("usb_current_candidate_ua", usb.currentUa)
             }
         }
         insertSample(row)
@@ -530,25 +535,6 @@ class BatteryRecorderService : Service() {
             inventoryHandoff.failed()
             event("INVENTORY_ERROR", "WORKER_QUEUE_REJECTED")
         }
-    }
-
-    private fun findUsbCandidate(json: JSONObject): Pair<Long, Long>? {
-        val keys = json.keys()
-        while (keys.hasNext()) {
-            val key = keys.next()
-            if (!key.startsWith("power_supply/") || !key.endsWith("/voltage_now")) continue
-            val supplyPath = key.substringBeforeLast('/')
-            val supplyName = supplyPath.substringAfterLast('/')
-            if (supplyName.lowercase(Locale.US) in setOf("battery", "bms", "main")) continue
-            val voltage = json.optString(key).toLongOrNull() ?: continue
-            val current = json.optString(supplyPath + "/current_now").toLongOrNull() ?: continue
-            val type = json.optString(supplyPath + "/type").uppercase(Locale.US)
-            val looksUsb = supplyName.contains("usb", true) || type.contains("USB")
-            if (looksUsb && json.optString(supplyPath + "/online") == "1" && voltage in 1_000_000L..30_000_000L && current in -20_000_000L..20_000_000L) {
-                return voltage to current
-            }
-        }
-        return null
     }
 
     private fun insertSample(values: ContentValues) {
@@ -736,6 +722,12 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             } else {
                 val json = try { JSONObject(latestHardwareJson) } catch (_: Throwable) { JSONObject() }
                 val fields = json.keys().asSequence().associateWith { json.optString(it) }
+                val capturedWall = fields["@inventory_started_wall_ms"]?.toLongOrNull()
+                val captureAge = KernelPresentation.ageMs(capturedWall,nowMs)
+                appendLine("Stored inventory acquisition start (wall time): " +
+                    (capturedWall?.let { SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z",Locale.US).format(Date(it)) } ?: "unknown") +
+                    " • apparent age " + (captureAge?.let { durationText(it) } ?: "unknown") +
+                    " (wall-clock changes may affect age; not a live gauge)")
                 val gauge = KernelGauge.select(fields, "power_supply/")
                 fun field(name: String, value: String?): Pair<String, String>? =
                     if (gauge == null || value == null) null else (gauge.source + "/" + name) to value
