@@ -110,7 +110,7 @@ internal object BatteryCapacityEstimator {
 
     private fun mode(sample: CapacitySample): String? = when {
         sample.status == "CHARGING" || (sample.status == "FULL" && sample.plug != "NONE") -> "CHARGING"
-        sample.status == "DISCHARGING" -> "DISCHARGING"
+        BatteryStateMath.discharging(sample.status, sample.plug) -> "DISCHARGING"
         else -> null
     }
 }

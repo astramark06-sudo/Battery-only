@@ -443,12 +443,14 @@ class MainActivity : Activity() {
             BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "NOT CHARGING"
             else -> "UNKNOWN"
         }
-        val pluggedCode = intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        val pluggedCode = intent?.takeIf { it.hasExtra(BatteryManager.EXTRA_PLUGGED) }?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1)
         val plugged = when (pluggedCode) {
             BatteryManager.BATTERY_PLUGGED_AC -> "AC"
             BatteryManager.BATTERY_PLUGGED_USB -> "USB"
             BatteryManager.BATTERY_PLUGGED_WIRELESS -> "WIRELESS"
-            else -> if (pluggedCode == 0) "NONE / NOT REPORTED" else "OTHER ($pluggedCode)"
+            8 -> "DOCK"
+            null, -1 -> "UNKNOWN"
+            else -> if (pluggedCode == 0) "NONE" else if (pluggedCode > 0) "OTHER ($pluggedCode)" else "UNKNOWN"
         }
         val healthCode = intent?.getIntExtra(BatteryManager.EXTRA_HEALTH, -1) ?: -1
         val health = when (healthCode) {

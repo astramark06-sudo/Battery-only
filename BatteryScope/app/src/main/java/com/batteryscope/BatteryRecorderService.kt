@@ -228,12 +228,14 @@ class BatteryRecorderService : Service() {
             BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "NOT_CHARGING"
             else -> "UNKNOWN"
         }
-        val plugCode = intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        val plugCode = intent?.takeIf { it.hasExtra(BatteryManager.EXTRA_PLUGGED) }?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1)
         val plug = when (plugCode) {
             BatteryManager.BATTERY_PLUGGED_AC -> "AC"
             BatteryManager.BATTERY_PLUGGED_USB -> "USB"
             BatteryManager.BATTERY_PLUGGED_WIRELESS -> "WIRELESS"
-            else -> if (plugCode == 0) "NONE" else "OTHER_" + plugCode
+            8 -> "DOCK"
+            null, -1 -> "UNKNOWN"
+            else -> if (plugCode == 0) "NONE" else if (plugCode > 0) "OTHER_" + plugCode else "UNKNOWN"
         }
         val healthCode = intent?.getIntExtra(BatteryManager.EXTRA_HEALTH, -1) ?: -1
         if (status != lastSampleState) {
@@ -288,7 +290,7 @@ class BatteryRecorderService : Service() {
             val maxChargingVoltage = intent?.getIntExtra("max_charging_voltage", -1) ?: -1
             if (maxChargingCurrent > 0) put("max_charging_current_ua", maxChargingCurrent)
             if (maxChargingVoltage > 0) put("max_charging_voltage_uv", maxChargingVoltage)
-            val present = intent?.extras?.getBoolean("present")
+            val present = intent?.extras?.let { if (it.containsKey("present")) it.getBoolean("present") else null }
             if (present != null) put("battery_present", if (present) 1 else 0)
             val invalidCharger = intent?.extras?.let { if (it.containsKey("invalid_charger")) it.getInt("invalid_charger") else null }
             if (invalidCharger != null) put("invalid_charger_state", invalidCharger)
@@ -355,12 +357,17 @@ class BatteryRecorderService : Service() {
         if (!hasUsageAccess()) {
             if (foregroundPackage != null) event("USAGE_ACCESS_REVOKED", "Usage Access unavailable; clearing previous foreground app attribution")
             foregroundPackage = null
+            lastUsageQueryMs = 0L
             return null
         }
         val manager = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
-        val from = if (lastUsageQueryMs > 0L) lastUsageQueryMs else now - 60_000L
+        if (lastUsageQueryMs > now) {
+            lastUsageQueryMs = 0L
+            foregroundPackage = null
+        }
+        val from = if (lastUsageQueryMs > 0L) lastUsageQueryMs else (now - 60_000L).coerceAtLeast(0L)
         return try {
-            val events = manager.queryEvents(from, now)
+            val events = manager.queryEvents(from, now) ?: throw IllegalStateException("Usage events unavailable")
             val event = UsageEvents.Event()
             while (events.hasNextEvent()) {
                 events.getNextEvent(event)
@@ -385,8 +392,9 @@ class BatteryRecorderService : Service() {
             foregroundPackage
         } catch (t: Throwable) {
             this.event("USAGE_QUERY_ERROR", t.javaClass.simpleName + ": " + (t.message ?: "unknown"))
-            lastUsageQueryMs = now
-            foregroundPackage
+            lastUsageQueryMs = 0L
+            foregroundPackage = null
+            null
         }
     }
 
@@ -610,7 +618,8 @@ class RecorderDatabase(context: Context) :
     }
 
     fun insertSample(values: ContentValues) {
-        writableDatabase.insertWithOnConflict("samples", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        // Preserve the earlier sample on a wall-clock collision and report the failed insert.
+        writableDatabase.insertOrThrow("samples", null, values)
     }
 
     fun insertEvent(timestamp: Long, type: String, details: String) {
@@ -619,7 +628,7 @@ class RecorderDatabase(context: Context) :
             put("event_type", type)
             put("details", details.take(1000))
         }
-        writableDatabase.insert("events", null, values)
+        writableDatabase.insertOrThrow("events", null, values)
     }
 
 
@@ -811,7 +820,7 @@ class RecorderDatabase(context: Context) :
         val pluggedDrainPct: String get() = String.format(Locale.US, "%.1f", pluggedDrain)
         fun counter(value: Double?): String = value?.let { String.format(Locale.US, "%.1f mAh", it) } ?: "n/a"
     }
-    private data class Bucket(var ms: Long = 0L, var pct: Double = 0.0, var chargeCounterUah: Long = 0L, var counterIntervals: Int = 0)
+    private data class Bucket(var ms: Long = 0L, var pct: Double = 0.0, val counter: CounterRateAccumulator = CounterRateAccumulator())
     private data class Stats(
         val count: Int, val chargeHours: String, val dischargeHours: String,
         val chargedPct: String, val dischargedPct: String, val chargeRate: String, val dischargeRate: String,
@@ -905,15 +914,12 @@ class RecorderDatabase(context: Context) :
     }
 
     private fun charging(row: Row) = row.state == "CHARGING"
-    private fun discharging(row: Row) = row.state == "DISCHARGING"
+    private fun discharging(row: Row) = BatteryStateMath.discharging(row.state, row.plug)
 
     private fun add(bucket: Bucket, duration: Long, pct: Double, counter: Long?) {
         bucket.ms += duration
         bucket.pct += pct
-        if (counter != null) {
-            bucket.chargeCounterUah += counter
-            bucket.counterIntervals++
-        }
+        bucket.counter.add(counter, duration)
     }
 
     private fun summariseSince(from: Long): Stats {
@@ -968,11 +974,10 @@ class RecorderDatabase(context: Context) :
                         if (sameApp) appTime[after.app] = (appTime[after.app] ?: 0L) + dt
                         if (before.pct != null && after.pct != null) {
                             val delta = (after.pct - before.pct).toDouble()
-                            val counterDelta = if (before.chargeCounter != null && after.chargeCounter != null)
-                                after.chargeCounter - before.chargeCounter else null
-                            val counterGain = counterDelta?.takeIf { it > 0L }
-                            val counterLoss = counterDelta?.takeIf { it < 0L }?.let { -it }
-                            val bothPlugged = before.plug != "NONE" && after.plug != "NONE"
+                            val counterDelta = CounterDelta.between(before.chargeCounter, after.chargeCounter)
+                            val counterGain = CounterDelta.gain(counterDelta)
+                            val counterLoss = CounterDelta.loss(counterDelta)
+                            val bothPlugged = BatteryStateMath.connected(before.plug) && BatteryStateMath.connected(after.plug)
                             val androidReportsCharging = charging(before) && charging(after)
                             if ((bothPlugged || androidReportsCharging) && delta < 0.0) {
                                 // Some ROMs report EXTRA_PLUGGED=NONE while BATTERY_STATUS remains CHARGING.
@@ -1012,7 +1017,7 @@ class RecorderDatabase(context: Context) :
         fun rate(bucket: Bucket) = if (bucket.ms > 0L) fmt(bucket.pct / hours(bucket)) else "n/a"
         return Stats(
             count, duration(charge), duration(drain), fmt(charge.pct), fmt(drain.pct), rate(charge), rate(drain),
-            if (charge.counterIntervals > 0) fmt(charge.chargeCounterUah / 1000.0) else "n/a", if (drain.counterIntervals > 0) fmt(drain.chargeCounterUah / 1000.0) else "n/a",
+            if (charge.counter.observedMs > 0L) fmt(charge.counter.deltaUah / 1000.0) else "n/a", if (drain.counter.observedMs > 0L) fmt(drain.counter.deltaUah / 1000.0) else "n/a",
             duration(chargeOn), fmt(chargeOn.pct), rate(chargeOn), duration(chargeOff), fmt(chargeOff.pct), rate(chargeOff),
             duration(drainOn), fmt(drainOn.pct), rate(drainOn), duration(drainOff), fmt(drainOff.pct), rate(drainOff),
             duration(pluggedDrain), fmt(pluggedDrain.pct), rate(pluggedDrain),
@@ -1030,8 +1035,8 @@ class RecorderDatabase(context: Context) :
                     appPluggedDrainCounterMah[it.key]
                 )
             },
-            if (charge.counterIntervals > 0) BatteryRateMath.counterRateMa(charge.chargeCounterUah, charge.ms)?.let { fmt(it) } ?: "n/a" else "n/a",
-            if (drain.counterIntervals > 0) BatteryRateMath.counterRateMa(drain.chargeCounterUah, drain.ms)?.let { fmt(it) } ?: "n/a" else "n/a"
+            charge.counter.rateMa()?.let { fmt(it) } ?: "n/a",
+            drain.counter.rateMa()?.let { fmt(it) } ?: "n/a"
         )
     }
 
@@ -1041,7 +1046,7 @@ class RecorderDatabase(context: Context) :
         val sessions = mutableListOf<List<Row>>()
         var current = mutableListOf<Row>()
         for (row in rows) {
-            val firstFull = wantCharge && row.state == "FULL" && row.plug != "NONE"
+            val firstFull = wantCharge && row.state == "FULL" && BatteryStateMath.connected(row.plug)
             if (matches(row)) {
                 if (current.isNotEmpty()) {
                     val gap = sampleIntervalMs(current.last(), row)
@@ -1104,7 +1109,7 @@ class RecorderDatabase(context: Context) :
         if (wantCharge && end < rows.lastIndex) {
             val next = rows[end + 1]
             val gap = sampleIntervalMs(rows[end], next)
-            if (next.state == "FULL" && next.plug != "NONE" &&
+            if (next.state == "FULL" && BatteryStateMath.connected(next.plug) &&
                 isRateInterval(rows[end], next, gap)) end++
         }
         var start = end
