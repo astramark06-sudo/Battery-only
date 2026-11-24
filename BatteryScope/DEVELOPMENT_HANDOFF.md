@@ -1,5 +1,10 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Recorder/database source separation (R40 partial)
+
+- Moved RecorderDatabase, including its storage, reporting, import and export methods, into RecorderDatabase.kt. Service and database class bodies are unchanged apart from trailing whitespace; package/class identity, public API, schema, behavior and file formats are preserved. This is a mechanical source split, not a claim that analytics have been fully modularized.
+- Exact UsageHistory.kt helper blob 145acd2891f27505b7c3fb81800097b7c53dd2cd compiled locally. 1,000 randomized replay scenarios and density-reduction checks passed (3,778,273 assertions). These are planner checks, not Android provider or SQLite commit tests. Cumulative Android CI required.
+
 ## 2026-11-25 — Durable bounded UsageEvents import (R18 partial)
 
 - Prior checkpoint 5b38e8a93b021fd83708eaa4a3e2fc11d746e28d passed both Android jobs (build, JVM tests, APK inspection, lint, emulator) and signing policy: run 45483253766.

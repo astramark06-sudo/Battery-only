@@ -1,5 +1,7 @@
 # BatteryScope project status and engineering handoff
 
+Current source layout: RecorderDatabase now resides in `app/src/main/java/com/batteryscope/RecorderDatabase.kt`, separate from the foreground service. Optional Usage Access supports bounded package-transition import with transactional checkpoints and deduplication. These new source changes require cumulative CI; see DEVELOPMENT_HANDOFF.md.
+
 ## Current development status — 2026-11-25
 
 Active work is in [draft PR #3](https://github.com/astramark06-sudo/Battery-only/pull/3), branch `fix/apk-update-preflight`; main is the previous baseline, not the current remediation source. See [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md) for the latest checkpoint and [PR CI](https://github.com/astramark06-sudo/Battery-only/pull/3/checks) for exact verification outcomes. Package com.batteryscope, version 1.15 (16), database v5. No release or data migration on the physical RMX2161 has been authorized as verified.
