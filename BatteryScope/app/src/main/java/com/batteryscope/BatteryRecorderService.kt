@@ -83,15 +83,17 @@ class BatteryRecorderService : Service() {
             var failure: String? = null
             try { sample() }
             catch (t: Exception) { failure = t.javaClass.simpleName + ": " + (t.message ?: "unknown") }
-            finally {
-                val finished = SystemClock.elapsedRealtime()
-                recordOutcome(started, finished, failure)
-                failure?.let { event("SAMPLE_ERROR", it) }
-                if (recorderRunning) {
-                    val delay = RecorderCadence.nextDelayMs(started, SystemClock.elapsedRealtime(), SAMPLE_INTERVAL_MS)
-                    if (!handler.postDelayed(this, delay)) {
-                        recordOutcome(started, SystemClock.elapsedRealtime(), "Recorder worker rejected next sample")
-                    }
+            catch (fatal: Error) {
+                recordOutcome(started, SystemClock.elapsedRealtime(), "Fatal sample failure: " + fatal.javaClass.simpleName)
+                throw fatal // Never claim a successful sample or retry a fatal process error.
+            }
+            val finished = SystemClock.elapsedRealtime()
+            recordOutcome(started, finished, failure)
+            failure?.let { event("SAMPLE_ERROR", it) }
+            if (recorderRunning) {
+                val delay = RecorderCadence.nextDelayMs(started, SystemClock.elapsedRealtime(), SAMPLE_INTERVAL_MS)
+                if (!handler.postDelayed(this, delay)) {
+                    recordOutcome(started, SystemClock.elapsedRealtime(), "Recorder worker rejected next sample")
                 }
             }
         }
@@ -191,15 +193,17 @@ class BatteryRecorderService : Service() {
         val prior = sampleHealth.state(finished)
         sampleHealth = sampleHealth.completed(started, finished, failure?.take(300))
         if (activeRecorder !== this || !recorderRunning) return
-        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val edit = prefs.edit()
-            .putLong(KEY_LAST_ATTEMPT_WALL, System.currentTimeMillis())
-            .putLong(KEY_LAST_ATTEMPT_DURATION, finished - started)
-        if (failure == null) edit.putLong(KEY_LAST_SUCCESS_WALL, System.currentTimeMillis())
-        else edit.putString(KEY_LAST_SAMPLE_FAILURE, failure.take(300))
-            .putLong(KEY_LAST_SAMPLE_FAILURE_AT, System.currentTimeMillis())
-        // Best effort on disk; the process-local snapshot remains available even if storage is full.
-        edit.apply()
+        try {
+            val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+            val wall = System.currentTimeMillis()
+            val edit = prefs.edit().putLong(KEY_LAST_ATTEMPT_WALL, wall)
+                .putLong(KEY_LAST_ATTEMPT_DURATION, finished - started)
+            if (failure == null) edit.putLong(KEY_LAST_SUCCESS_WALL, wall)
+            else edit.putString(KEY_LAST_SAMPLE_FAILURE, failure.take(300))
+                .putLong(KEY_LAST_SAMPLE_FAILURE_AT, wall)
+            // Best effort on disk; process-local health remains available if persistence fails.
+            edit.apply()
+        } catch (_: Exception) { /* Persistence must not stop the next sample. */ }
         if (prior != sampleHealth.state(finished)) {
             Handler(Looper.getMainLooper()).post {
                 if (activeRecorder === this && recorderRunning) {
@@ -519,9 +523,11 @@ class BatteryRecorderService : Service() {
             } catch (e: Exception) {
                 // Store the failure separately from the database, where possible.
                 if (activeRecorder === this) {
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                        .putString(KEY_LAST_EVENT_FAILURE, e.javaClass.simpleName)
-                        .putLong(KEY_LAST_EVENT_FAILURE_AT, System.currentTimeMillis()).apply()
+                    try {
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putString(KEY_LAST_EVENT_FAILURE, e.javaClass.simpleName)
+                            .putLong(KEY_LAST_EVENT_FAILURE_AT, System.currentTimeMillis()).apply()
+                    } catch (_: Exception) { /* Best effort only; no recursive diagnostic write. */ }
                 }
             }
         }
