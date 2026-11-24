@@ -1,7 +1,9 @@
 # BatteryScope project status and engineering handoff
 
+> **Repository migration — 2026-11-24:** Current development is in [Battery-only/main](https://github.com/astramark06-sudo/Battery-only/tree/main). The former `batteryscope` branch in `ocr` is historical, not the active development branch. The [standalone Android build](https://github.com/astramark06-sudo/Battery-only/actions/runs/45348612049) passed for commit `45d65c6b624515bfd269e1eaa6380cb4611e050a` (artifact ID `14899402289`). Earlier source commits, checksums and signer records below remain historical evidence; no new device or signing-compatibility verification is claimed.
+
 Last source update: 2026-11-23  
-Active branch: batteryscope  
+Active branch: main (Battery-only)  
 Current source version: 1.15  
 Current version code: 16  
 Application ID / namespace: com.batteryscope  
@@ -49,7 +51,7 @@ App-source verification checkpoint branch head: `f78c9e63c63652b6dc8d600623482d9
 
 ## Verification state
 
-- Source version 1.15 / versionCode 16 is committed to branch `batteryscope`; app source commit used for the verified build is `480a567cd7c90f552976dc60472fa6ef11a5e126`.
+- Source version 1.15 / versionCode 16 was originally committed to branch `batteryscope`; app source commit used for the verified build is `480a567cd7c90f552976dc60472fa6ef11a5e126`.
 - Capacity estimator unit tests cover nominal capacity, small-SOC-change rejection, counter-direction mismatch and missing boot-count rejection.
 - Battery rate math unit tests cover battery-side mA calculations and SOC time forecasts; battery percentage math tests reject missing or invalid Android level/scale metadata.
 - Source-level checks completed: no Shizuku/privileged service references in MainActivity, recorder service, manifest or Gradle dependencies; CSV header/sample/event row alignment verified at 28 fields; isolated Kotlin arithmetic checks passed for battery-side mA and SOC forecasts.

@@ -1,8 +1,10 @@
 # BatteryScope — persistent development handoff
 
+> **Repository migration — 2026-11-24:** Current development is in [Battery-only/main](https://github.com/astramark06-sudo/Battery-only/tree/main). The former `batteryscope` branch in `ocr` is historical, not the active development branch. The [standalone Android build](https://github.com/astramark06-sudo/Battery-only/actions/runs/45348612049) passed for commit `45d65c6b624515bfd269e1eaa6380cb4611e050a` (artifact ID `14899402289`). Earlier source commits, checksums and signer records below remain historical evidence; no new device or signing-compatibility verification is claimed.
+
 Last updated: 2026-11-23  
-Repository: https://github.com/astramark06-sudo/test  
-Active branch: `batteryscope`  
+Repository: https://github.com/astramark06-sudo/Battery-only  
+Active branch: `main`  
 Target device: Realme Narzo 20 Pro (RMX2161), Android 12, non-rooted  
 Current source version: 1.15 / versionCode 16  
 Package: `com.batteryscope`
@@ -90,7 +92,7 @@ BatteryStats per-app power and detailed system battery history remain privileged
 
 ## Next engineering priorities
 
-1. Verify the dedicated Android GitHub Actions workflow on the latest batteryscope commit; repair every compile/test failure before APK delivery.
+1. Verify the dedicated Android GitHub Actions workflow on the latest Battery-only main commit; repair every compile/test failure before APK delivery.
 2. Inspect the exact workflow artifact, APK metadata, checksum and signing identity; do not assume update compatibility with older debug builds.
 3. Continue auditing MainActivity and recorder for lifecycle races, main-thread I/O, long-running history queries and large-database performance.
 4. Recheck schema-v4 migrations from v1/v2/v3 and verify all CSV header/sample/event rows align at 28 fields.
