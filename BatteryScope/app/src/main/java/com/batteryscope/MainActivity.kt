@@ -36,9 +36,8 @@ class MainActivity : Activity() {
     private lateinit var historyText: TextView
     private lateinit var capacityText: TextView
     private lateinit var deviceText: TextView
-    private var historyUpdatedAtMs = 0L
-    private var historyLoadInFlight = false
-    private var capacityLoadInFlight = false
+    private val historyRefreshGate = RefreshGate(300_000L)
+    private val capacityRefreshGate = RefreshGate(0L)
     private var exportInFlight = false
     private lateinit var samplingModeButton: Button
 
@@ -686,13 +685,11 @@ class MainActivity : Activity() {
     }
 
     private fun refreshHistoryDisplay(force: Boolean) {
-        if (!::historyText.isInitialized || historyLoadInFlight) return
+        if (isFinishing || isDestroyed || !::historyText.isInitialized) return
         val now = System.currentTimeMillis()
         val elapsed = android.os.SystemClock.elapsedRealtime()
-        if (!force && historyUpdatedAtMs > 0L && elapsed - historyUpdatedAtMs < 300_000L) return
-        historyUpdatedAtMs = elapsed
+        if (!historyRefreshGate.request(elapsed, force)) return
         refreshCapacityDisplay()
-        historyLoadInFlight = true
         Thread {
             var database: RecorderDatabase? = null
             val result = try {
@@ -704,16 +701,19 @@ class MainActivity : Activity() {
                 try { database?.close() } catch (_: Throwable) { }
             }
             runOnUiThread {
-                historyLoadInFlight = false
-                if (!isFinishing && !isDestroyed && ::historyText.isInitialized) historyText.text = result
+                val followUp = historyRefreshGate.finish()
+                if (!isFinishing && !isDestroyed && ::historyText.isInitialized) {
+                    historyText.text = result
+                    if (followUp) refreshHistoryDisplay(true)
+                }
             }
         }.start()
     }
 
 
     private fun refreshCapacityDisplay() {
-        if (!::capacityText.isInitialized || capacityLoadInFlight) return
-        capacityLoadInFlight = true
+        if (isFinishing || isDestroyed || !::capacityText.isInitialized) return
+        if (!capacityRefreshGate.request(android.os.SystemClock.elapsedRealtime(), true)) return
         Thread {
             val report = try {
                 val database = RecorderDatabase(applicationContext)
@@ -722,8 +722,11 @@ class MainActivity : Activity() {
                 "Capacity estimate failed: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}"
             }
             runOnUiThread {
-                capacityLoadInFlight = false
-                if (!isFinishing && !isDestroyed && ::capacityText.isInitialized) capacityText.text = report
+                val followUp = capacityRefreshGate.finish()
+                if (!isFinishing && !isDestroyed && ::capacityText.isInitialized) {
+                    capacityText.text = report
+                    if (followUp) refreshCapacityDisplay()
+                }
             }
         }.start()
     }

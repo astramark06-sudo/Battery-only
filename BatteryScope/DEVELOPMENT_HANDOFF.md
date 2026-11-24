@@ -1,5 +1,14 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — History refresh race correction (CI pending)
+
+Active development: `fix/apk-update-preflight`, draft [PR #3](https://github.com/astramark06-sudo/Battery-only/pull/3). Previous verified head `17c61bdfaa23b24860d32598f9ea1d245c975710`: [Android build, JVM and emulator jobs](https://github.com/astramark06-sudo/Battery-only/actions/runs/45469977712) and [signing-policy tests](https://github.com/astramark06-sudo/Battery-only/actions/runs/45469977496) succeeded. The comprehensive [audit](FULL_APP_AUDIT_2026-11-25.md) was subsequently committed at `e60d2443382c6857fe1d0f4cd422d82914fdeb43`; this change preserves that checkpoint. Older main-branch and CI-pending records below are historical.
+
+Fixed a UI race: a forced history refresh (including after restore) was previously dropped during an in-flight read, leaving stale history until the five-minute periodic refresh. Capacity refreshes could also be dropped. Main-thread RefreshGate now coalesces forced requests, schedules one immediate follow-up after the worker finishes, preserves the periodic cooldown and prevents overlapping workers for each report. Destroyed/finishing Activities do not launch follow-ups. Added three JVM regression tests for forced requests, cooldown and capacity admission. New commit build and actual Activity behavior are not yet verified; check PR CI and physical-device restore behavior.
+
+App ID, versionCode 16/versionName 1.15, database schema v5, raw history and signing configuration are unchanged. Draft PR remains unmerged; signing continuity and physical RMX2161 validation still block release. Next development: address audit findings R03–R09 and benchmark long-history report queries while preserving interval semantics.
+
+
 ## 2026-11-25 — Verified CI recovery checkpoint
 
 The active development branch is `fix/apk-update-preflight`, draft [PR #3](https://github.com/astramark06-sudo/Battery-only/pull/3). Head `54c9efa80a147c4093de5985cc8d24058373be05`; tested PR merge ref `cefed72488be9cd7aafcc013fa7fb6c26741e921`.
