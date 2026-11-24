@@ -221,6 +221,11 @@ class MainActivity : Activity() {
             setOnClickListener { chooseHistoryBackup() }
         }
         content.addView(restoreButton, LinearLayout.LayoutParams(-1, -2))
+        val legacyButton = Button(this).apply {
+            text = "Import original BatteryScope CSV"
+            setOnClickListener { chooseHistoryBackup(true) }
+        }
+        content.addView(legacyButton, LinearLayout.LayoutParams(-1, -2))
         val batterySettingsButton = Button(this).apply {
             text = "Battery optimisation settings"
             setOnClickListener { openBatteryOptimisationSettings() }
@@ -869,8 +874,8 @@ class MainActivity : Activity() {
     @Deprecated("Handled for Android document-picker compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == BACKUP_IMPORT_REQUEST_CODE) {
-            if (resultCode == RESULT_OK) data?.data?.let { restoreHistoryBackup(it) }
+        if (requestCode == BACKUP_IMPORT_REQUEST_CODE || requestCode == LEGACY_IMPORT_REQUEST_CODE) {
+            if (resultCode == RESULT_OK) data?.data?.let { restoreHistoryBackup(it, requestCode == LEGACY_IMPORT_REQUEST_CODE) }
             return
         }
         if (requestCode != CSV_EXPORT_REQUEST_CODE) return
@@ -913,25 +918,25 @@ class MainActivity : Activity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun chooseHistoryBackup() {
+    private fun chooseHistoryBackup(legacy: Boolean = false) {
         if (exportInFlight || pendingExportFile != null) return
         AlertDialog.Builder(this)
-            .setTitle("Restore earlier history")
-            .setMessage("Use only a BatteryScope .bsh backup from this handset. Existing history will not be overwritten. A backup overlapping existing timestamps will be rejected. Large backups may take time and temporary storage.")
+            .setTitle(if (legacy) "Import original CSV" else "Restore earlier history")
+            .setMessage(if (legacy) "Select the original, unedited 28-column BatteryScope CSV from this handset. CSV is not checksummed or lossless; missing fields and flattened text cannot be recovered. Existing history will not be overwritten and overlap is rejected." else "Use only a BatteryScope .bsh backup from this handset. Existing history will not be overwritten. A backup overlapping existing timestamps will be rejected. Large backups may take time and temporary storage.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Choose backup") { _, _ ->
                 try {
                     startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
                         type = "*/*"
-                    }, BACKUP_IMPORT_REQUEST_CODE)
+                    }, if (legacy) LEGACY_IMPORT_REQUEST_CODE else BACKUP_IMPORT_REQUEST_CODE)
                 } catch (t: Throwable) {
                     statusText.text = "Could not open backup picker: " + t.javaClass.simpleName
                 }
             }.show()
     }
 
-    private fun restoreHistoryBackup(uri: Uri) {
+    private fun restoreHistoryBackup(uri: Uri, legacy: Boolean = false) {
         if (exportInFlight || pendingExportFile != null) return
         exportInFlight = true
         statusText.text = "Validating and restoring earlier history…"
@@ -944,7 +949,9 @@ class MainActivity : Activity() {
                 val input = app.contentResolver.openInputStream(uri) ?: error("Cannot read selected backup")
                 input.use { source -> file.outputStream().use { HistoryBackup.stage(source,it) } }
                 val database = RecorderDatabase(app)
-                val result = try { file.inputStream().use { database.restoreBackup(it) } } finally { database.close() }
+                val result = try {
+                    if (legacy) database.restoreLegacyCsv(file) else file.inputStream().use { database.restoreBackup(it) }
+                } finally { database.close() }
                 "Restored ${result.samples} samples and ${result.events} events. Existing records preserved."
             } catch (t: Throwable) {
                 "Restore failed; no imported records committed: " + (t.message ?: t.javaClass.simpleName)
@@ -966,6 +973,7 @@ class MainActivity : Activity() {
         private const val PENDING_EXPORT_NAME = "pending_export_name"
         private const val CSV_EXPORT_REQUEST_CODE = 5101
         private const val BACKUP_IMPORT_REQUEST_CODE = 5103
+        private const val LEGACY_IMPORT_REQUEST_CODE = 5104
         private const val NOTIFICATION_REQUEST_CODE = 5102
     }
 }

@@ -29,6 +29,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import org.json.JSONObject
 import java.io.Writer
+import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.text.SimpleDateFormat
@@ -1251,27 +1252,47 @@ class RecorderDatabase(context: Context) :
             HistorySnapshot(SnapshotRange(c.getLong(0),c.getLong(1),c.getLong(2)), SnapshotRange(c.getLong(3),c.getLong(4),c.getLong(5)))
         }
 
-    private fun snapshotRows(db: SQLiteDatabase, table: String, range: SnapshotRange, columns: List<HistoryBackup.Column>): Sequence<List<String?>> =
-        sequence {
-            val names = columns.joinToString(",") { it.name }
-            db.rawQuery("SELECT $names FROM $table WHERE id BETWEEN ? AND ? ORDER BY id",
-                arrayOf(range.minId.toString(), range.maxId.toString())).use { cursor ->
-                while (cursor.moveToNext()) yield(columns.indices.map { i -> if (cursor.isNull(i)) null else cursor.getString(i) })
-            }
-        }
+    private fun snapshotCursor(db: SQLiteDatabase, table: String, range: SnapshotRange, columns: List<HistoryBackup.Column>): Cursor {
+        val names = columns.joinToString(",") { it.name }
+        return db.rawQuery("SELECT $names FROM $table WHERE id BETWEEN ? AND ? ORDER BY id",
+            arrayOf(range.minId.toString(), range.maxId.toString()))
+    }
+
+    private fun backupRows(cursor: Cursor, size: Int): Sequence<List<String?>> = sequence {
+        while (cursor.moveToNext()) yield((0 until size).map { i -> if (cursor.isNull(i)) null else cursor.getString(i) })
+    }
 
     internal fun exportBackup(output: OutputStream): HistoryBackup.Counts {
         val db = readableDatabase
         val snap = snapshot(db)
         val counts = HistoryBackup.Counts(snap.samples.count, snap.events.count)
-        HistoryBackup.write(output, counts,
-            snapshotRows(db,"samples",snap.samples,HistoryBackup.sampleColumns),
-            snapshotRows(db,"events",snap.events,HistoryBackup.eventColumns))
+        snapshotCursor(db,"samples",snap.samples,HistoryBackup.sampleColumns).use { samples ->
+            snapshotCursor(db,"events",snap.events,HistoryBackup.eventColumns).use { events ->
+                HistoryBackup.write(output, counts,
+                    backupRows(samples,HistoryBackup.sampleColumns.size), backupRows(events,HistoryBackup.eventColumns.size))
+            }
+        }
         return counts
     }
 
     /** Transactional non-destructive restore of earlier history into this installation. */
-    internal fun restoreBackup(input: InputStream): HistoryBackup.Counts {
+    internal fun restoreBackup(input: InputStream): HistoryBackup.Counts =
+        restoreHistory { header, sample, event -> HistoryBackup.read(input, header, sample, event) }
+
+    /** Validate and count staged legacy CSV before the database transaction. */
+    internal fun restoreLegacyCsv(file: File): HistoryBackup.Counts {
+        val expected = file.reader(Charsets.UTF_8).use { LegacyHistoryCsv.scan(it, {}, {}) }
+        return restoreHistory { header, sample, event ->
+            header(expected)
+            val actual = file.reader(Charsets.UTF_8).use { LegacyHistoryCsv.scan(it, sample, event) }
+            check(actual == expected) { "CSV record count changed" }
+            actual
+        }
+    }
+
+    private fun restoreHistory(
+        read: ((HistoryBackup.Counts) -> Unit, (List<String?>) -> Unit, (List<String?>) -> Unit) -> HistoryBackup.Counts
+    ): HistoryBackup.Counts {
         val db = writableDatabase
         db.beginTransactionNonExclusive()
         try {
@@ -1298,7 +1319,7 @@ class RecorderDatabase(context: Context) :
                 }
                 db.insertOrThrow(table, null, values)
             }
-            val counts = HistoryBackup.read(input, { header ->
+            val counts = read({ header ->
                 require(header.total > 0L) { "Backup has no history" }
                 sampleId = HistoryBackup.firstImportedId(minId("samples"), header.samples)
                 eventId = HistoryBackup.firstImportedId(minId("events"), header.events)

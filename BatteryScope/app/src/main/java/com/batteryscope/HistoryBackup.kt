@@ -36,10 +36,10 @@ internal object HistoryBackup {
     )
     val eventColumns = listOf(integer("timestamp_ms", true), text("event_type", true), text("details"))
 
-    private fun validateCounts(c: Counts) {
+    internal fun validateCounts(c: Counts) {
         require(c.samples in 0..MAX_ROWS && c.events in 0..MAX_ROWS) { "Unsupported backup row count" }
     }
-    private fun validateValue(column: Column, value: String?) {
+    internal fun validateValue(column: Column, value: String?) {
         if (value == null) {
             require(!column.required) { "Required backup field missing: ${column.name}" }
             return
