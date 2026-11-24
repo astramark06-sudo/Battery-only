@@ -22,14 +22,14 @@ class RecorderDatabaseAndroidTest {
     }
     private fun number(db: SQLiteDatabase, sql: String): Long =
         db.rawQuery(sql,null).use { c -> assertTrue(c.moveToFirst()); c.getLong(0) }
-    private fun sample(db: RecorderDatabase, wall: Long, elapsed: Long = wall) {
+    private fun sample(db: RecorderDatabase, wall: Long, elapsed: Long = wall, percent: Int = 52, charging: Boolean = false) {
         db.insertSample(ContentValues().apply {
             put("timestamp_ms",wall)
             put("elapsed_realtime_ms",elapsed)
             put("boot_count",9)
-            put("battery_status","DISCHARGING")
-            put("plug_type","NONE")
-            put("battery_percent",52)
+            put("battery_status",if (charging) "CHARGING" else "DISCHARGING")
+            put("plug_type",if (charging) "AC" else "NONE")
+            put("battery_percent",percent)
             put("battery_current_ua",-123456L)
             put("temperature_c",31.1234567890123)
             put("screen_on",0)
@@ -104,6 +104,28 @@ class RecorderDatabaseAndroidTest {
                 assertEquals(-123456L,number(target.readableDatabase,"SELECT battery_current_ua FROM samples ORDER BY id LIMIT 1"))
             }
         } finally { file.delete() }
+    }
+
+    @Test fun reportExcludesFutureRowsButPreservesRawHistory() = database { db ->
+        val now = 2_000_000_000_000L
+        sample(db, now - 30_000L, 100_000L, 52)
+        sample(db, now, 130_000L, 51)
+        sample(db, now + 30_000L, 160_000L, 99)
+        val report = db.historySummary(now)
+        assertTrue(report.contains("Stored samples: 3"))
+        assertTrue(report.contains("=== 24 HOURS • 2 samples ==="))
+        assertTrue(report.contains("=== ALL TIME • 2 samples ==="))
+        assertTrue(report.contains("From last eligible recorded 51%"))
+        assertFalse(report.contains("From last eligible recorded 99%"))
+        assertTrue(report.contains("Last sample: " + now))
+        assertEquals(3L, number(db.readableDatabase, "SELECT COUNT(*) FROM samples"))
+    }
+
+    @Test fun predictedThresholdIncludesElapsedSessionTime() = database { db ->
+        val start = 2_000_000_000_000L
+        for (i in 0..60) sample(db, start + i * 30_000L, 100_000L + i * 30_000L, 60 + i / 6, true)
+        val report = db.historySummary(start + 1_800_000L)
+        assertTrue(report.contains("80%: 1h 0m estimated total from session start; 30m estimated remaining from last sample"))
     }
 
     @Test fun actualAndroidOpenHelperMigratesV4WithoutDroppingRawRecords() {

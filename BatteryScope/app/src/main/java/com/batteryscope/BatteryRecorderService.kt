@@ -557,10 +557,11 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
 
     fun capacityEstimateReport(nowMs: Long = System.currentTimeMillis()): String {
         val from = nowMs - 90L * 24L * 60L * 60L * 1000L
+        val range = snapshot(readableDatabase).samples
         val empiricalReport = readableDatabase.rawQuery(
             """SELECT timestamp_ms,elapsed_realtime_ms,boot_count,battery_percent,battery_status,plug_type,charge_counter_uah
-               FROM samples WHERE timestamp_ms>=? ORDER BY boot_count,elapsed_realtime_ms,id""".trimIndent(),
-            arrayOf(from.toString())
+               FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY boot_count,elapsed_realtime_ms,id""".trimIndent(),
+            windowArgs(from, nowMs, range)
         ).use { cursor ->
             val time = cursor.getColumnIndexOrThrow("timestamp_ms")
             val elapsed = cursor.getColumnIndexOrThrow("elapsed_realtime_ms")
@@ -582,8 +583,8 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             })
         }
         val latestHardwareJson = readableDatabase.rawQuery(
-            "SELECT power_supply_json FROM samples WHERE power_supply_json IS NOT NULL ORDER BY id DESC LIMIT 1",
-            null
+            "SELECT power_supply_json FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND power_supply_json IS NOT NULL ORDER BY id DESC LIMIT 1",
+            windowArgs(0L, nowMs, range)
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
         val kernelReport = buildString {
             appendLine("KERNEL FUEL-GAUGE CAPACITY / CYCLE REPORT")
@@ -637,12 +638,12 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         }
     }
 
-    private fun resourceHistoryReport(now: Long): String {
+    private fun resourceHistoryReport(now: Long, range: SnapshotRange): String {
         val summary = ResourceHistory()
         val from = now - 24L * 60L * 60L * 1000L
         readableDatabase.rawQuery(
-            "SELECT boot_count,power_supply_json FROM samples WHERE timestamp_ms>=? AND timestamp_ms<=? AND power_supply_json IS NOT NULL ORDER BY id",
-            arrayOf(from.toString(),now.toString())
+            "SELECT boot_count,power_supply_json FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND power_supply_json IS NOT NULL ORDER BY id",
+            windowArgs(from, now, range)
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 val json = try { JSONObject(cursor.getString(1)) } catch (_: Exception) { continue }
@@ -684,21 +685,25 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             "365 DAYS" to 365L * 24 * 60 * 60 * 1000,
             "ALL TIME" to Long.MAX_VALUE
         )
+        // Fix row bounds across all report queries. New samples/restores are visible on the next refresh.
+        val range = snapshot(readableDatabase).samples
         // Only recent session detail is materialised; rolling statistics stream directly from SQLite.
-        val recentRows = readWindow(now - 30L * 24 * 60 * 60 * 1000)
-        val latestPercent = readableDatabase.rawQuery(
-            "SELECT battery_percent FROM samples WHERE battery_percent IS NOT NULL ORDER BY id DESC LIMIT 1", null
-        ).use { if (it.moveToFirst()) it.getInt(0) else null }
+        val recentRows = readWindow(now - 30L * 24 * 60 * 60 * 1000, now, range)
+        val latestReading = readableDatabase.rawQuery(
+            "SELECT battery_percent,timestamp_ms FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND battery_percent BETWEEN 0 AND 100 ORDER BY id DESC LIMIT 1",
+            windowArgs(0L, now, range)
+        ).use { if (it.moveToFirst()) it.getInt(0) to it.getLong(1) else null }
+        val latestPercent = latestReading?.first
         return buildString {
-            val total = readableDatabase.rawQuery("SELECT COUNT(*) FROM samples", null).use {
-                if (it.moveToFirst()) it.getLong(0) else 0L
-            }
+            val total = range.count
             appendLine("BATTERYSCOPE LOCAL HISTORY • RAW SAMPLES RETAINED UNTIL USER DELETES APP DATA")
             appendLine("Stored samples: " + total + " • target sample interval: 30 seconds")
+            appendLine("Report excludes samples dated after its reference time; original records remain stored.")
+            if (latestReading != null) appendLine("Last eligible battery level sample age: " + durationText(now - latestReading.second))
             appendLine("App foreground correlation is not a direct per-app electrical measurement.")
             for ((label, duration) in windows) {
                 val from = if (duration == Long.MAX_VALUE) 0L else now - duration
-                val stats = summariseSince(from)
+                val stats = summariseSince(from, now, range)
                 appendLine()
                 appendLine("=== " + label + " • " + stats.count + " samples ===")
                 appendLine("Sampling continuity: " + stats.gapReport)
@@ -713,10 +718,10 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 appendLine("Discharging screen OFF: " + stats.drainOffHours + " h • -" + stats.drainOffPct + "% • " + stats.drainOffRate + " %/h")
                 appendLine("Discharge rate comparison: screen ON " + stats.drainOnRate + " %/h vs screen OFF " + stats.drainOffRate + " %/h (historical averages)")
                 if (latestPercent != null) {
-                    appendLine("From current " + latestPercent + "%, estimated time to 100% at screen-ON charging rate: " +
+                    appendLine("From last eligible recorded " + latestPercent + "%, estimated time to 100% at screen-ON charging rate: " +
                         forecastDuration(100.0 - latestPercent, stats.chargeOnRate) + " • screen-OFF rate: " +
                         forecastDuration(100.0 - latestPercent, stats.chargeOffRate))
-                    appendLine("From current " + latestPercent + "%, estimated time to 0% at screen-ON discharge rate: " +
+                    appendLine("From last eligible recorded " + latestPercent + "%, estimated time to 0% at screen-ON discharge rate: " +
                         forecastDuration(latestPercent.toDouble(), stats.drainOnRate) + " • screen-OFF rate: " +
                         forecastDuration(latestPercent.toDouble(), stats.drainOffRate))
                 }
@@ -731,7 +736,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 }
             }
             appendLine()
-            appendLine(resourceHistoryReport(now))
+            appendLine(resourceHistoryReport(now, range))
             appendLine()
             appendLine("=== MOST RECENT CHARGING SESSION (LAST 30 DAYS) ===")
             appendLine(sessionReport(recentRows, true))
@@ -747,7 +752,8 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             appendLine()
             appendLine("Rate intervals outside 1–90 seconds and known reboot boundaries are excluded. Screen-state rates omit mixed-state endpoints; counter rates use valid counter intervals only. Threshold times are resolved to the sample interval, not exact hardware event times.")
             val last = readableDatabase.rawQuery(
-                "SELECT timestamp_ms,battery_percent,battery_status,plug_type,foreground_package FROM samples ORDER BY id DESC LIMIT 1", null
+                "SELECT timestamp_ms,battery_percent,battery_status,plug_type,foreground_package FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id DESC LIMIT 1",
+                windowArgs(0L, now, range)
             ).use { cursor ->
                 if (!cursor.moveToFirst()) "No sample recorded yet"
                 else "Last sample: " + cursor.getLong(0) + " • " +
@@ -795,11 +801,11 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         val gapReport: String
     )
 
-    private fun readWindow(from: Long): List<Row> {
+    private fun readWindow(from: Long, now: Long, range: SnapshotRange): List<Row> {
         val rows = mutableListOf<Row>()
         readableDatabase.rawQuery(
-            "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count FROM samples WHERE timestamp_ms>=? ORDER BY id",
-            arrayOf(from.toString())
+            "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id",
+            windowArgs(from, now, range)
         ).use { c ->
             while (c.moveToNext()) rows += Row(
                 c.getLong(0), c.getLong(1), if (c.isNull(2)) null else c.getInt(2),
@@ -838,7 +844,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         bucket.counter.add(counter, duration)
     }
 
-    private fun summariseSince(from: Long): Stats {
+    private fun summariseSince(from: Long, now: Long, range: SnapshotRange): Stats {
         val charge = Bucket(); val drain = Bucket()
         val chargeOn = Bucket(); val chargeOff = Bucket()
         val drainOn = Bucket(); val drainOff = Bucket()
@@ -857,8 +863,8 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         val gap = SamplingGapAccumulator(BatteryRecorderService.SAMPLE_INTERVAL_MS)
         readableDatabase.rawQuery(
             """SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count
-               FROM samples WHERE timestamp_ms>=? ORDER BY id""".trimIndent(),
-            arrayOf(from.toString())
+               FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id""".trimIndent(),
+            windowArgs(from, now, range)
         ).use { cursor ->
             val iTime = cursor.getColumnIndexOrThrow("timestamp_ms")
             val iElapsed = cursor.getColumnIndexOrThrow("elapsed_realtime_ms")
@@ -1132,8 +1138,12 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 (wantCharge && initial >= threshold) || (!wantCharge && initial <= threshold) -> "already at threshold at session start"
                 crossing != null -> durationText(crossing) + " observed"
                 !directionMatches -> if (wantCharge) "not projected: battery level did not increase during this charging-state segment" else "not projected: battery level did not decrease during this discharging-state segment"
-                rate > 0.0 && ((wantCharge && current < threshold) || (!wantCharge && current > threshold)) ->
-                    durationText(((kotlin.math.abs(threshold - current).toDouble() / rate) * 3_600_000.0).toLong()) + " estimated from current session average"
+                rate > 0.0 && ((wantCharge && current < threshold) || (!wantCharge && current > threshold)) -> {
+                    val remainingMs = BatteryRateMath.forecastDurationMs(kotlin.math.abs(threshold - current).toDouble(), rate)
+                    if (remainingMs == null || remainingMs > Long.MAX_VALUE - elapsed) "not projected: duration unavailable"
+                    else durationText(elapsed + remainingMs) + " estimated total from session start; " +
+                        durationText(remainingMs) + " estimated remaining from last sample"
+                }
                 else -> "not reached / insufficient data"
             }
             out.appendLine("  " + threshold + "%: " + status)
@@ -1173,6 +1183,9 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
 
     private data class SnapshotRange(val minId: Long, val maxId: Long, val count: Long)
     private data class HistorySnapshot(val samples: SnapshotRange, val events: SnapshotRange)
+
+    private fun windowArgs(from: Long, now: Long, range: SnapshotRange): Array<String> =
+        arrayOf(from.toString(), now.toString(), range.minId.toString(), range.maxId.toString())
 
     /** One SQL statement captures both immutable row ranges at a single point in time.
      * Recorder inserts append above the upper bound; restore prepends below the lower bound.

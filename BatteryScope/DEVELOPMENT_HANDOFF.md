@@ -1,5 +1,10 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Audit R07/R08 report corrections (CI pending)
+
+Rolling history, session, resource, capacity and last-reading queries now use inclusive reference-time bounds plus fixed sample ID ranges captured once per report. Future-dated rows remain in raw storage/exports but cannot enter these summaries. Last level is labelled recorded (not live) and its age is displayed. Session threshold predictions explicitly show both total from session start and remaining from the last sample; observed crossings retain their start-relative meaning. Added disposable Android database tests for a retained future-dated sample and a 30-minute session with a further 30-minute forecast. R07/R08 source fixes implemented; emulator regression and physical-device verification pending. No schema, data deletion, signing or version changes. The prior refresh-gate commit is `b6041c4224363ed9a488a2ca59a4fd1a49c8a840`.
+
+
 ## 2026-11-25 — History refresh race correction (CI pending)
 
 Active development: `fix/apk-update-preflight`, draft [PR #3](https://github.com/astramark06-sudo/Battery-only/pull/3). Previous verified head `17c61bdfaa23b24860d32598f9ea1d245c975710`: [Android build, JVM and emulator jobs](https://github.com/astramark06-sudo/Battery-only/actions/runs/45469977712) and [signing-policy tests](https://github.com/astramark06-sudo/Battery-only/actions/runs/45469977496) succeeded. The comprehensive [audit](FULL_APP_AUDIT_2026-11-25.md) was subsequently committed at `e60d2443382c6857fe1d0f4cd422d82914fdeb43`; this change preserves that checkpoint. Older main-branch and CI-pending records below are historical.
