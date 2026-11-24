@@ -1,12 +1,14 @@
 # BatteryScope release checklist
 
+> **Repository migration — 2026-11-24:** Current development is in [Battery-only/main](https://github.com/astramark06-sudo/Battery-only/tree/main). The former `batteryscope` branch in `ocr` is historical, not the active development branch. The [standalone Android build](https://github.com/astramark06-sudo/Battery-only/actions/runs/45348612049) passed for commit `45d65c6b624515bfd269e1eaa6380cb4611e050a` (artifact ID `14899402289`). Earlier source commits, checksums and signer records below remain historical evidence; no new device or signing-compatibility verification is claimed.
+
 A source commit is not a release. Keep build verification, artifact integrity, installation and physical-device validation as separate results.
 
 ## Before release
-- [ ] Confirm the active branch is batteryscope and inspect the complete diff from the previous verified checkpoint.
+- [ ] Confirm the active repository is Battery-only and the branch is main (or the intended PR branch) and inspect the complete diff from the previous verified checkpoint.
 - [ ] Check all app files, manifest permissions/components, database schema/export, capacity-estimator logic, foreground-service lifecycle and boot receiver.
 - [ ] Keep application ID / namespace com.batteryscope.
-- [ ] Do not alter the separate Python project at the repository root.
+- [ ] Keep the separate OCR/Python project in the `ocr` repository unchanged.
 - [ ] Confirm no Shizuku dependency/provider/AIDL, ADB setup, root or companion-app requirement exists.
 - [ ] Confirm BatteryScope performs no sysfs or charging-control writes.
 
