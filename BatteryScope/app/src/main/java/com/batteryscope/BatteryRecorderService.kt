@@ -830,8 +830,8 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         )
         // Fix row bounds across all report queries. New samples/restores are visible on the next refresh.
         val range = snapshot(readableDatabase).samples
-        // Only recent session detail is materialised; rolling statistics stream directly from SQLite.
-        val recentRows = readWindow(now - 30L * 24 * 60 * 60 * 1000, now, range)
+        // Keep only bounded summaries of recent runs, never the complete row list.
+        val recent = readRecentSessions(now - 30L * 24 * 60 * 60 * 1000, now, range)
         val latestReading = readableDatabase.rawQuery(
             "SELECT battery_percent,timestamp_ms FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND battery_percent BETWEEN 0 AND 100 ORDER BY id DESC LIMIT 1",
             windowArgs(0L, now, range)
@@ -887,16 +887,16 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             appendLine(resourceHistoryReport(now, range))
             appendLine()
             appendLine("=== MOST RECENT CHARGING SESSION (LAST 30 DAYS) ===")
-            appendLine(sessionReport(recentRows, true))
+            appendLine(sessionReport(recent.charging.firstOrNull(), recent.hasSamples, true))
             appendLine()
             appendLine("=== MOST RECENT DISCHARGING SESSION (LAST 30 DAYS) ===")
-            appendLine(sessionReport(recentRows, false))
+            appendLine(sessionReport(recent.discharging.firstOrNull(), recent.hasSamples, false))
             appendLine()
             appendLine("=== RECENT CHARGING SESSIONS (LAST 30 DAYS) ===")
-            appendLine(sessionHistoryReport(recentRows, true, 8))
+            appendLine(sessionHistoryReport(recent.charging, recent.hasSamples, true))
             appendLine()
             appendLine("=== RECENT DISCHARGING SESSIONS (LAST 30 DAYS) ===")
-            appendLine(sessionHistoryReport(recentRows, false, 8))
+            appendLine(sessionHistoryReport(recent.discharging, recent.hasSamples, false))
             appendLine()
             appendLine("Rate intervals outside 1–90 seconds and known reboot boundaries are excluded. Screen-state rates omit mixed-state endpoints; counter rates use valid counter intervals only. Threshold times are resolved to the sample interval, not exact hardware event times.")
             val last = readableDatabase.rawQuery(
@@ -949,20 +949,33 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         val gapReport: String, val counterCoverage: String
     )
 
-    private fun readWindow(from: Long, now: Long, range: SnapshotRange): List<Row> {
-        val rows = mutableListOf<Row>()
+    private data class RecentSessions(
+        val hasSamples: Boolean,
+        val charging: List<SessionAccumulator>,
+        val discharging: List<SessionAccumulator>
+    )
+
+    private fun readRecentSessions(from: Long, now: Long, range: SnapshotRange): RecentSessions {
+        val charging = SessionCollector(true, 8)
+        val discharging = SessionCollector(false, 8)
+        var hasSamples = false
         readableDatabase.rawQuery(
             "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count FROM samples INDEXED BY idx_samples_time WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id",
             windowArgs(from, now, range)
         ).use { c ->
-            while (c.moveToNext()) rows += Row(
-                c.getLong(0), c.getLong(1), if (c.isNull(2)) null else c.getInt(2),
-                c.getString(3) ?: "UNKNOWN", c.getString(4) ?: "NONE",
-                if (c.isNull(5)) null else c.getLong(5), c.getInt(6) == 1, c.getString(7) ?: "",
-                if (c.isNull(8)) null else c.getInt(8)
-            )
+            while (c.moveToNext()) {
+                hasSamples = true
+                val row = Row(
+                    c.getLong(0), c.getLong(1), if (c.isNull(2)) null else c.getInt(2),
+                    c.getString(3) ?: "UNKNOWN", c.getString(4) ?: "NONE",
+                    if (c.isNull(5)) null else c.getLong(5), c.getInt(6) == 1, c.getString(7) ?: "",
+                    if (c.isNull(8)) null else c.getInt(8)
+                )
+                charging.accept(row)
+                discharging.accept(row)
+            }
         }
-        return rows
+        return RecentSessions(hasSamples, charging.finish(), discharging.finish())
     }
 
     private fun sampleIntervalMs(before: Row, after: Row): Long =
@@ -973,15 +986,6 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
 
     private fun isRateInterval(before: Row, after: Row, interval: Long): Boolean =
         RecorderTimeMath.isRateInterval(interval, before.bootCount, after.bootCount)
-
-    private fun observedDurationMs(rows: List<Row>): Long {
-        var total = 0L
-        for (i in 1 until rows.size) {
-            val interval = sampleIntervalMs(rows[i - 1], rows[i])
-            if (interval > 0L) total += interval
-        }
-        return total
-    }
 
     private fun charging(row: Row) = row.state == "CHARGING"
     private fun discharging(row: Row) = BatteryStateMath.discharging(row.state, row.plug)
@@ -1159,117 +1163,92 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         }
     }
 
-    private fun sessionHistoryReport(rows: List<Row>, wantCharge: Boolean, limit: Int): String {
-        if (rows.isEmpty()) return "No samples recorded."
-        fun matches(row: Row) = if (wantCharge) charging(row) else discharging(row)
-        val sessions = mutableListOf<List<Row>>()
-        var current = mutableListOf<Row>()
-        for (row in rows) {
-            val firstFull = wantCharge && row.state == "FULL" && BatteryStateMath.connected(row.plug)
-            if (matches(row)) {
-                if (current.isNotEmpty()) {
-                    val gap = sampleIntervalMs(current.last(), row)
-                    if (!isRateInterval(current.last(), row, gap)) {
-                        sessions += current
-                        current = mutableListOf()
-                    }
+    /**
+     * Keep only the most recent completed summaries plus one active run.
+     * Each run retains endpoints and aggregate values, never a list of samples.
+     */
+    private inner class SessionCollector(private val wantCharge: Boolean, private val limit: Int) {
+        private val completed = java.util.ArrayDeque<SessionAccumulator>()
+        private var active: SessionAccumulator? = null
+
+        private fun closeRun() {
+            val run = active ?: return
+            if (completed.size == limit) completed.removeFirst()
+            completed.addLast(run)
+            active = null
+        }
+
+        fun accept(row: Row) {
+            val current = active
+            val matches = if (wantCharge) charging(row) else discharging(row)
+            if (matches) {
+                if (current != null && isRateInterval(current.last, row, sampleIntervalMs(current.last, row))) {
+                    current.accept(row)
+                } else {
+                    closeRun()
+                    active = SessionAccumulator(row, wantCharge)
                 }
-                current += row
-            } else if (firstFull) {
-                if (current.isNotEmpty()) {
-                    val gap = sampleIntervalMs(current.last(), row)
-                    if (isRateInterval(current.last(), row, gap)) current += row
-                    sessions += current
-                    current = mutableListOf()
-                }
-            } else if (current.isNotEmpty()) {
-                sessions += current
-                current = mutableListOf()
+            } else {
+                if (current != null && wantCharge && row.state == "FULL" && BatteryStateMath.connected(row.plug) &&
+                    isRateInterval(current.last, row, sampleIntervalMs(current.last, row))) current.accept(row)
+                closeRun()
             }
         }
-        if (current.isNotEmpty()) sessions += current
-        if (sessions.isEmpty()) return "No recorded sessions."
-        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
-        return sessions.takeLast(limit).asReversed().joinToString("\n") { run ->
-            val first = run.first()
-            val last = run.last()
-            val start = formatter.format(Date(first.time))
-            if (run.size < 2 || first.pct == null || last.pct == null) {
-                start + " • one sample only; elapsed time and rate unavailable"
-            } else {
-                val elapsed = observedDurationMs(run).coerceAtLeast(0L)
-                val delta = last.pct - first.pct
-                val rate = if (elapsed > 0L) delta.toDouble() / (elapsed / 3_600_000.0) else 0.0
-                val onMs = run.zipWithNext().sumOf { (a, b) ->
-                    val dt = sampleIntervalMs(a, b)
-                    if (isRateInterval(a, b, dt) && a.screen && b.screen) dt else 0L
-                }
-                val offMs = run.zipWithNext().sumOf { (a, b) ->
-                    val dt = sampleIntervalMs(a, b)
-                    if (isRateInterval(a, b, dt) && !a.screen && !b.screen) dt else 0L
-                }
-                val counter = CounterDelta.between(first.chargeCounter, last.chargeCounter)?.div(1000.0)
-                val state = first.pct.toString() + "%→" + last.pct + "%"
-                val counterText = if (counter == null) "endpoint mAh n/a" else String.format(Locale.US, "%+.1f mAh endpoint change (not interval-validated)", counter)
-                start + " • " + state + " • " + durationText(elapsed) +
-                    " • " + String.format(Locale.US, "%+.2f pp/h", rate) +
-                    " • screen ON " + durationText(onMs) +
-                    " / OFF " + durationText(offMs) + " / mixed " + durationText((elapsed - onMs - offMs).coerceAtLeast(0L)) +
-                    " • " + counterText +
-                    if (wantCharge && last.state == "FULL") " • full" else ""
-            }
+
+        fun finish(): List<SessionAccumulator> {
+            closeRun()
+            return completed.toList().asReversed()
         }
     }
 
-    private fun sessionReport(rows: List<Row>, wantCharge: Boolean): String {
-        if (rows.isEmpty()) return "No samples recorded."
-        fun matches(row: Row) = if (wantCharge) charging(row) else discharging(row)
-        var end = rows.lastIndex
-        while (end >= 0 && !matches(rows[end])) end--
-        if (end < 0) return "No recorded session."
-        // Include the first FULL sample after a charging run, but not later full/plugged idle time.
-        if (wantCharge && end < rows.lastIndex) {
-            val next = rows[end + 1]
-            val gap = sampleIntervalMs(rows[end], next)
-            if (next.state == "FULL" && BatteryStateMath.connected(next.plug) &&
-                isRateInterval(rows[end], next, gap)) end++
-        }
-        var start = end
-        while (start > 0) {
-            val gap = sampleIntervalMs(rows[start - 1], rows[start])
-            val prev = rows[start - 1]
-            if (!matches(prev) || !isRateInterval(prev, rows[start], gap)) break
-            start--
-        }
-        val run = rows.subList(start, end + 1)
-        if (run.size < 2) return "Session has only one sample; rate and duration are not yet measurable."
-        val first = run.first(); val last = run.last()
-        val initial = first.pct ?: return "Battery percentage unavailable."
-        val current = last.pct ?: return "Battery percentage unavailable."
-        val elapsed = observedDurationMs(run)
-        if (elapsed <= 0L) return "Session duration unavailable."
-        val change = current - initial
-        val directionMatches = if (wantCharge) change > 0 else change < 0
-        val rate = if (directionMatches) kotlin.math.abs(change.toDouble()) / (elapsed / 3_600_000.0) else 0.0
-        val counterDelta = CounterDelta.between(first.chargeCounter, last.chargeCounter)
+    private inner class SessionAccumulator(val first: Row, private val wantCharge: Boolean) {
+        var last = first
+            private set
+        var count = 1
+            private set
+        var elapsed = 0L
+            private set
         val sessionCounter = CounterRateAccumulator()
         var onMs = 0L
+            private set
         var offMs = 0L
-        var onSocChange = 0.0
-        var offSocChange = 0.0
+            private set
         var mixedMs = 0L
+            private set
+        var onSocChange = 0.0
+            private set
+        var offSocChange = 0.0
+            private set
         var onSocMs = 0L
+            private set
         var offSocMs = 0L
+            private set
         val onCounter = CounterRateAccumulator()
         val offCounter = CounterRateAccumulator()
-        for ((before, after) in run.zipWithNext()) {
+        val thresholds = if (wantCharge) listOf(50, 80, 90, 100) else listOf(80, 50, 20, 10, 0)
+        val crossings = mutableMapOf<Int, Long>()
+
+        fun accept(after: Row) {
+            val before = last
             val dt = sampleIntervalMs(before, after)
-            if (!isRateInterval(before, after, dt)) continue
+            check(isRateInterval(before, after, dt))
+            last = after
+            count++
+            elapsed += dt
+            if (before.pct != null && after.pct != null) {
+                for (threshold in thresholds) {
+                    if (threshold !in crossings &&
+                        ((wantCharge && before.pct < threshold && after.pct >= threshold) ||
+                         (!wantCharge && before.pct > threshold && after.pct <= threshold))) {
+                        crossings[threshold] = elapsed
+                    }
+                }
+            }
             val deltaCounter = CounterDelta.forInterval(before.chargeCounter, after.chargeCounter, dt)
             sessionCounter.add(deltaCounter, dt)
             if (before.screen != after.screen) {
                 mixedMs += dt
-                continue
+                return
             }
             val screenBucketOn = after.screen
             if (screenBucketOn) onMs += dt else offMs += dt
@@ -1285,6 +1264,60 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             val directionCounter = deltaCounter?.takeIf { if (wantCharge) it >= 0L else it <= 0L }
             if (screenBucketOn) onCounter.add(directionCounter, dt) else offCounter.add(directionCounter, dt)
         }
+    }
+
+    private fun sessionHistoryReport(sessions: List<SessionAccumulator>, hasSamples: Boolean, wantCharge: Boolean): String {
+        if (!hasSamples) return "No samples recorded."
+        if (sessions.isEmpty()) return "No recorded sessions."
+        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+        return sessions.joinToString("\n") { run ->
+            val first = run.first
+            val last = run.last
+            val start = formatter.format(Date(first.time))
+            if (run.count < 2) {
+                start + " • one sample only; elapsed time and rate unavailable"
+            } else {
+                val elapsed = run.elapsed
+                val rate = if (first.pct != null && last.pct != null && elapsed > 0L)
+                    String.format(Locale.US, "%+.2f pp/h", (last.pct - first.pct).toDouble() / (elapsed / 3_600_000.0))
+                    else "rate unavailable"
+                val counter = CounterDelta.between(first.chargeCounter, last.chargeCounter)?.div(1000.0)
+                val state = if (first.pct == null || last.pct == null) "endpoint battery percentage unavailable"
+                    else first.pct.toString() + "%→" + last.pct + "%"
+                val counterText = if (counter == null) "endpoint mAh n/a" else String.format(Locale.US, "%+.1f mAh endpoint change (not interval-validated)", counter)
+                start + " • " + state + " • " + durationText(elapsed) +
+                    " • " + rate +
+                    " • screen ON " + durationText(run.onMs) +
+                    " / OFF " + durationText(run.offMs) + " / mixed " + durationText(run.mixedMs) +
+                    " • " + counterText +
+                    if (wantCharge && last.state == "FULL") " • full" else ""
+            }
+        }
+    }
+
+    private fun sessionReport(run: SessionAccumulator?, hasSamples: Boolean, wantCharge: Boolean): String {
+        if (!hasSamples) return "No samples recorded."
+        if (run == null) return "No recorded session."
+        if (run.count < 2) return "Session has only one sample; rate and duration are not yet measurable."
+        val first = run.first; val last = run.last
+        val elapsed = run.elapsed
+        val initial = first.pct ?: return "Battery percentage unavailable. Observed duration: " + durationText(elapsed)
+        val current = last.pct ?: return "Battery percentage unavailable. Observed duration: " + durationText(elapsed)
+        if (elapsed <= 0L) return "Session duration unavailable."
+        val change = current - initial
+        val directionMatches = if (wantCharge) change > 0 else change < 0
+        val rate = if (directionMatches) kotlin.math.abs(change.toDouble()) / (elapsed / 3_600_000.0) else 0.0
+        val counterDelta = CounterDelta.between(first.chargeCounter, last.chargeCounter)
+        val sessionCounter = run.sessionCounter
+        val onMs = run.onMs
+        val offMs = run.offMs
+        val mixedMs = run.mixedMs
+        val onSocChange = run.onSocChange
+        val offSocChange = run.offSocChange
+        val onSocMs = run.onSocMs
+        val offSocMs = run.offSocMs
+        val onCounter = run.onCounter
+        val offCounter = run.offCounter
         val onRate = if (onSocMs > 0L) onSocChange / (onSocMs / 3_600_000.0) else null
         val offRate = if (offSocMs > 0L) offSocChange / (offSocMs / 3_600_000.0) else null
         val onCounterRate = onCounter.rateMa()
@@ -1321,10 +1354,10 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             " • time to " + thresholdName + ": " + onForecast)
         out.appendLine("Screen OFF (display-off proxy): " + offRateText + " • " + offCounterText +
             " • time to " + thresholdName + ": " + offForecast)
-        val thresholds = if (wantCharge) listOf(50, 80, 90, 100) else listOf(80, 50, 20, 10, 0)
+        val thresholds = run.thresholds
         out.appendLine(if (wantCharge) "Time from first recorded sample in this session to charge thresholds:" else "Time from first recorded sample in this session to discharge thresholds:")
         for (threshold in thresholds) {
-            val crossing = thresholdTime(run, threshold, wantCharge)
+            val crossing = run.crossings[threshold]
             val status = when {
                 (wantCharge && initial >= threshold) || (!wantCharge && initial <= threshold) -> "already at threshold at session start"
                 crossing != null -> durationText(crossing) + " observed"
@@ -1343,22 +1376,10 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         return out.toString().trim()
     }
 
-    /** Returns elapsed duration from the first row, not an absolute wall/boot timestamp. */
-    private fun thresholdTime(rows: List<Row>, threshold: Int, upward: Boolean): Long? {
-        var elapsedFromStart = 0L
-        for (i in 1 until rows.size) {
-            elapsedFromStart += sampleIntervalMs(rows[i - 1], rows[i]).coerceAtLeast(0L)
-            val before = rows[i - 1].pct ?: continue
-            val after = rows[i].pct ?: continue
-            if (upward && before < threshold && after >= threshold) return elapsedFromStart
-            if (!upward && before > threshold && after <= threshold) return elapsedFromStart
-        }
-        return null
-    }
-
     private fun forecastDuration(remainingPercentagePoints: Double, rateText: String): String {
         val rate = rateText.toDoubleOrNull()
-        if (rate == null || rate <= 0.0 || remainingPercentagePoints <= 0.0) return "not enough matching history"
+        if (remainingPercentagePoints == 0.0) return "already at threshold"
+        if (rate == null || rate <= 0.0 || remainingPercentagePoints < 0.0) return "not enough matching history"
         val ms = BatteryRateMath.forecastDurationMs(remainingPercentagePoints, rate) ?: return "not enough matching history"
         return durationText(ms) + " estimated from historical average"
     }

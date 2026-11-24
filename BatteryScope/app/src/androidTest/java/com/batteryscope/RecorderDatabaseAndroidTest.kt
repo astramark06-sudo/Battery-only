@@ -228,6 +228,47 @@ class RecorderDatabaseAndroidTest {
         assertEquals(7L,number(db.readableDatabase,"SELECT COUNT(*) FROM samples"))
     }
 
+    @Test fun recentSessionsKeepOnlyEightAndIncludeFirstFullEndpoint() = database { db ->
+        val start = 2_000_000_000_000L
+        for (i in 0..9) {
+            val wall = start + i * 300_000L
+            val elapsed = 100_000L + i * 300_000L
+            val pct = 40 + i
+            sample(db,wall,elapsed,pct,true)
+            sample(db,wall+30_000,elapsed+30_000,pct+1,true)
+            sample(db,wall+60_000,elapsed+60_000,pct+2,true)
+            sample(db,wall+90_000,elapsed+90_000,pct+3,true)
+            db.writableDatabase.execSQL("UPDATE samples SET battery_status='FULL' WHERE timestamp_ms IN (?,?)", arrayOf(wall+60_000,wall+90_000))
+            sample(db,wall+120_000,elapsed+120_000,pct+2)
+            sample(db,wall+150_000,elapsed+150_000,pct+1)
+        }
+        val report = db.historySummary(start + 9 * 300_000L + 150_000L)
+        val recent = report.substringAfter("=== RECENT CHARGING SESSIONS (LAST 30 DAYS) ===\n").substringBefore("\n\n===")
+        assertEquals(8,recent.lines().count { it.isNotBlank() })
+        assertTrue(recent.lines().first().contains("49%→51%"))
+        assertTrue(recent.lines().last().contains("42%→44%"))
+        assertFalse(recent.contains("41%→43%"))
+        assertTrue(recent.lines().all { it.endsWith(" • full") })
+        val mostRecent = report.substringAfter("=== MOST RECENT CHARGING SESSION (LAST 30 DAYS) ===").substringBefore("\n\n===")
+        assertTrue(mostRecent.contains("49% → 51%"))
+        assertTrue(mostRecent.contains("elapsed: 1m"))
+        assertTrue(mostRecent.contains("50%: 0m observed"))
+        assertEquals(60L,number(db.readableDatabase,"SELECT COUNT(*) FROM samples"))
+    }
+
+    @Test fun missingSessionPercentageAndReachedThresholdAreReportedAccurately() = database { db ->
+        val start = 2_000_000_000_000L
+        sample(db,start,100_000,99,true)
+        sample(db,start+30_000,130_000,100,true)
+        db.writableDatabase.execSQL("UPDATE samples SET battery_percent=NULL WHERE timestamp_ms=?",arrayOf(start))
+        val report = db.historySummary(start+30_000)
+        val recent = report.substringAfter("=== RECENT CHARGING SESSIONS (LAST 30 DAYS) ===").substringBefore("\n\n===")
+        assertTrue(recent.contains("endpoint battery percentage unavailable"))
+        assertFalse(recent.contains("one sample only"))
+        assertTrue(report.contains("estimated time to 100% at screen-ON charging rate: already at threshold"))
+        assertEquals(2L,number(db.readableDatabase,"SELECT COUNT(*) FROM samples"))
+    }
+
     @Test fun actualAndroidOpenHelperMigratesV4WithoutDroppingRawRecords() {
         val name = name()
         try {

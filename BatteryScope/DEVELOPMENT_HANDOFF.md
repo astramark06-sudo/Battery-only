@@ -1,5 +1,11 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Bounded recent-session processing and unavailable-result labels (R13/R31)
+
+- Recent 30-day session query now streams rows directly into independent charging/discharging collectors, each retaining at most eight completed aggregate summaries and one active run. A run stores endpoints, valid elapsed time, screen/counter totals and first threshold crossings, not its entire sample list. The detailed latest-session and compact recent-session reports use the same collector. Original ID order, rate interval, FULL terminal endpoint and no catch-up/interpolation rules are preserved.
+- Two disposable Android regressions cover ten sessions (only newest eight displayed, first FULL endpoint only, threshold timing) and missing endpoint SOC versus one-sample state. Historical forecast at an already reached threshold now reports that fact even when no valid rate exists. Partial R31: epoch-time presentation remains unchanged.
+- Prior WAL/single-pass commit `ee85fe421b3613ad7c8606976a2f7244f9c87f2c` [Android workflow](https://github.com/astramark06-sudo/Battery-only/actions/runs/45476540196) build/JVM and emulator jobs succeeded; signing-policy workflow passed. New bounded-session changes require their own Android CI. Persistent incremental aggregates, writer contention and real handset benchmark remain unresolved. No schema, signing, version, permissions or history changes.
+
 ## 2026-11-25 — Database concurrency and one-pass rolling summaries (R12/R13)
 
 - Prior head `3f4559a636bc6cb36de04cec5384745a6c1f2bba`: [Android CI](https://github.com/astramark06-sudo/Battery-only/actions/runs/45475629184) and [signing-policy CI](https://github.com/astramark06-sudo/Battery-only/actions/runs/45475629179) succeeded, including the asynchronous inventory and recorder deadline changes.
