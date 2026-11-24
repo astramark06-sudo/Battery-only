@@ -320,8 +320,10 @@ class BatteryRecorderService : Service() {
             event("BATTERY_PERCENT_METADATA", percentStatus)
             lastBatteryPercentStatus = percentStatus
         }
-        val voltage = intent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
-        val temperature = intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+        val voltage = BatteryBroadcastMetadata.int(intent,BatteryManager.EXTRA_VOLTAGE)
+        val temperature = BatteryBroadcastMetadata.int(intent,BatteryManager.EXTRA_TEMPERATURE)
+        val broadcastMetadata = BatteryBroadcastMetadata.capture(intent)
+        val broadcastReadElapsed = SystemClock.elapsedRealtime()
         val statusCode = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
         val status = when (statusCode) {
             BatteryManager.BATTERY_STATUS_CHARGING -> "CHARGING"
@@ -367,9 +369,9 @@ class BatteryRecorderService : Service() {
             event("BATTERY_CURRENT_QUALITY", "quality=" + currentQuality + "; status=" + status + "; plug=" + plug + "; raw_current_ua=" + (current?.toString() ?: "UNAVAILABLE"))
             lastCurrentMeasurementQuality = currentQualityKey
         }
-        val voltageQuality = BatteryMeasurementQuality.voltage(voltage.takeIf { it > 0 }).status
+        val voltageQuality = BatteryMeasurementQuality.voltage(voltage).status
         if (voltageQuality != lastVoltageMeasurementQuality) {
-            event("BATTERY_VOLTAGE_QUALITY", "quality=" + voltageQuality + "; raw_extra_voltage=" + (voltage.takeIf { it > 0 }?.toString() ?: "UNAVAILABLE") + "; expected_unit=mV")
+            event("BATTERY_VOLTAGE_QUALITY", "quality=" + voltageQuality + "; raw_extra_voltage=" + (voltage?.toString() ?: "UNAVAILABLE") + "; expected_unit=mV")
             lastVoltageMeasurementQuality = voltageQuality
         }
         val screenOn = (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
@@ -400,7 +402,7 @@ class BatteryRecorderService : Service() {
             if (percent != null) put("battery_percent", percent)
             put("battery_status", status)
             put("plug_type", plug)
-            if (voltage > 0) put("battery_voltage_mv", voltage)
+            if (voltage != null) put("battery_voltage_mv", voltage)
             val maxChargingCurrent = intent?.getIntExtra("max_charging_current", -1) ?: -1
             val maxChargingVoltage = intent?.getIntExtra("max_charging_voltage", -1) ?: -1
             if (maxChargingCurrent > 0) put("max_charging_current_ua", maxChargingCurrent)
@@ -411,7 +413,7 @@ class BatteryRecorderService : Service() {
             if (invalidCharger != null) put("invalid_charger_state", invalidCharger)
             val cycles = intent?.getIntExtra("cycle_count", -1) ?: -1
             if (cycles >= 0) put("battery_cycle_count", cycles)
-            if (temperature in 0..1000) put("temperature_c", temperature / 10.0)
+            BatteryBroadcastMetadata.temperatureC(temperature)?.let { put("temperature_c",it) }
             if (current != null) put("battery_current_ua", current)
             if (average != null) put("battery_average_current_ua", average)
             if (charge != null) put("charge_counter_uah", charge)
@@ -421,10 +423,14 @@ class BatteryRecorderService : Service() {
             put("screen_on", if (screenOn) 1 else 0)
             put("foreground_package", if (usageAccess) activeApp ?: "" else "")
             put("usage_access", if (usageAccess) 1 else 0)
-            if (inventoryJson != null) {
-                inventoryJson.put("@recorder/sample_collection_finished_elapsed_ms", SystemClock.elapsedRealtime())
-                put("power_supply_json", inventoryJson.toString())
-            }
+            // Use the existing extensible JSON field, retaining the v5 schema and
+            // portable backup/CSV columns. Metadata-only rows are not inventories.
+            val metadata = inventoryJson ?: JSONObject()
+            metadata.put("@battery_raw_v1",broadcastMetadata)
+            metadata.put("@battery_broadcast_read_elapsed_ms",broadcastReadElapsed)
+            metadata.put("@battery_property_status",JSONObject(lastBatteryPropertyStatus.mapKeys { it.key.toString() }))
+            metadata.put("@recorder/sample_collection_finished_elapsed_ms",SystemClock.elapsedRealtime())
+            put("power_supply_json",metadata.toString())
             if (usb != null) {
                 put("usb_voltage_candidate_uv", usb.voltageUv)
                 put("usb_current_candidate_ua", usb.currentUa)
@@ -718,7 +724,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             })
         }
         val latestHardwareJson = readableDatabase.rawQuery(
-            "SELECT power_supply_json FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND power_supply_json IS NOT NULL ORDER BY id DESC LIMIT 1",
+            "SELECT power_supply_json FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND (instr(power_supply_json,'\"@inventory_policy\"')>0 OR instr(power_supply_json,'\"power_supply/')>0) ORDER BY id DESC LIMIT 1",
             windowArgs(0L, nowMs, range)
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
         val kernelReport = buildString {
@@ -780,40 +786,53 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
     }
 
     private fun resourceHistoryReport(now: Long, range: SnapshotRange): String {
-        val summary = ResourceHistory()
-        val from = now - 24L * 60L * 60L * 1000L
+        val day = 86_400_000L
+        val windows = listOf("LAST 24 HOURS" to (now-day), "LAST 7 DAYS" to (now-7*day),
+            "LAST 30 DAYS" to (now-30*day), "LAST 90 DAYS" to (now-90*day),
+            "LAST 365 DAYS" to (now-365*day), "ALL TIME" to 0L)
+        val summaries = windows.map { ResourceHistory() }
         readableDatabase.rawQuery(
-            "SELECT boot_count,power_supply_json FROM samples INDEXED BY idx_samples_time WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND power_supply_json IS NOT NULL ORDER BY id",
-            windowArgs(from, now, range)
+            "SELECT boot_count,power_supply_json FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND instr(power_supply_json,'\"@device/captured_wall_ms\"')>0 ORDER BY id",
+            windowArgs(0L, now, range)
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 val json = try { JSONObject(cursor.getString(1)) } catch (_: Exception) { continue }
                 fun number(key: String) = json.optString("@device/" + key).toLongOrNull()?.takeIf { it >= 0L }
                 val wall = number("captured_wall_ms") ?: continue
                 val elapsed = number("captured_elapsed_ms") ?: continue
-                if (wall !in from..now) continue
-                summary.accept(ResourceObservation(wall,elapsed,
+                if (wall > now) continue
+                val observation = ResourceObservation(wall,elapsed,
                     if(cursor.isNull(0)) null else cursor.getInt(0),
                     number("memory/total_bytes"),number("memory/available_bytes"),number("storage/available_bytes"),
                     number("power/thermal_status")?.takeIf { it in 0L..6L }?.toInt(),
                     ResourceHistory.counterNames.map { number("network/" + it + "_bytes_since_boot") }
-                ))
+                )
+                windows.forEachIndexed { index, window ->
+                    if (wall >= window.second) summaries[index].accept(observation)
+                }
             }
         }
         fun mib(value: Long?) = value?.let { String.format(Locale.US,"%.1f MiB",it/1048576.0) } ?: "unavailable"
         return buildString {
-            appendLine("=== DEVICE RESOURCE HISTORY (LAST 24 HOURS) ===")
-            appendLine("Distinct resource snapshots: " + summary.snapshots)
-            appendLine("Available RAM observed range: " + mib(summary.lowestAvailableRam) + " — " + mib(summary.highestAvailableRam))
-            appendLine("Lowest available internal storage: " + mib(summary.lowestAvailableStorage))
-            appendLine("Highest Android thermal status: " + (summary.highestThermalStatus?.toString() ?: "unavailable"))
-            appendLine("Network traffic across valid observed intervals only:")
-            ResourceHistory.counterNames.forEachIndexed { i, name ->
-                val counter = summary.counters[i]
-                appendLine("  " + name + ": " + if(counter.intervals == 0) "unavailable" else
-                    mib(counter.bytes) + " • coverage " + durationText(counter.coveredMs) + " • " + counter.intervals + " intervals")
+            windows.forEachIndexed { index, window ->
+                val summary = summaries[index]
+                appendLine("=== DEVICE RESOURCE HISTORY (" + window.first + ") ===")
+                appendLine("Distinct resource snapshots: " + summary.snapshots)
+                appendLine("Available RAM observed range: " + mib(summary.lowestAvailableRam) + " — " + mib(summary.highestAvailableRam) +
+                    " • valid snapshots " + summary.ramObservations + "/" + summary.snapshots)
+                appendLine("Lowest available internal storage: " + mib(summary.lowestAvailableStorage) +
+                    " • valid snapshots " + summary.storageObservations + "/" + summary.snapshots)
+                appendLine("Highest Android thermal status: " + (summary.highestThermalStatus?.toString() ?: "unavailable") +
+                    " • valid snapshots " + summary.thermalObservations + "/" + summary.snapshots)
+                appendLine("Network traffic across valid observed intervals only:")
+                ResourceHistory.counterNames.forEachIndexed { i, name ->
+                    val counter = summary.counters[i]
+                    appendLine("  " + name + ": " + if(counter.intervals == 0) "unavailable" else
+                        mib(counter.bytes) + " • coverage " + durationText(counter.coveredMs) + " • " + counter.intervals + " intervals")
+                }
+                appendLine()
             }
-            append("Network totals are incomplete observations, not continuous full-day totals or per-app electrical measurements. Counter resets, reboots, clock discontinuities and gaps over 5 minutes are excluded.")
+            append("Resource windows use recorded acquisition wall times, not associated battery row timestamps. Network totals are incomplete observations, not continuous window totals or per-app electrical measurements. Counter resets, unknown boots, reboots, clock discontinuities and gaps over 5 minutes are excluded.")
         }
     }
 
@@ -902,7 +921,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 windowArgs(0L, now, range)
             ).use { cursor ->
                 if (!cursor.moveToFirst()) "No sample recorded yet"
-                else "Last sample: " + cursor.getLong(0) + " • " +
+                else "Last sample: " + SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z",Locale.US).format(Date(cursor.getLong(0))) + " • " +
                     (if (cursor.isNull(1)) "--" else cursor.getInt(1).toString() + "%") + " • " +
                     cursor.getString(2) + " • " + cursor.getString(3) + " • app=" + cursor.getString(4)
             }

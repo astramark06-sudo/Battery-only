@@ -45,6 +45,12 @@ internal class ResourceHistory {
         private set
     var highestThermalStatus: Int? = null
         private set
+    var ramObservations = 0L
+        private set
+    var storageObservations = 0L
+        private set
+    var thermalObservations = 0L
+        private set
     val counters = counterNames.map { CounterTotal() }
 
     fun accept(current: ResourceObservation) {
@@ -58,14 +64,21 @@ internal class ResourceHistory {
         snapshots++
         val ram = current.availableRam?.takeIf { it >= 0L && (current.totalRam == null || it <= current.totalRam) }
         if (ram != null) {
+            ramObservations++
             lowestAvailableRam = minOf(lowestAvailableRam ?: ram,ram)
             highestAvailableRam = maxOf(highestAvailableRam ?: ram,ram)
         }
         val storage = current.availableStorage?.takeIf { it >= 0L }
-        if (storage != null) lowestAvailableStorage = minOf(lowestAvailableStorage ?: storage,storage)
+        if (storage != null) {
+            storageObservations++
+            lowestAvailableStorage = minOf(lowestAvailableStorage ?: storage,storage)
+        }
         val thermal = current.thermalStatus?.takeIf { it in 0..6 }
-        if (thermal != null) highestThermalStatus = maxOf(highestThermalStatus ?: thermal,thermal)
-        if (before == null || before.bootCount == null || before.bootCount != current.bootCount) return
+        if (thermal != null) {
+            thermalObservations++
+            highestThermalStatus = maxOf(highestThermalStatus ?: thermal,thermal)
+        }
+        if (before == null || before.bootCount == null || before.bootCount < 0 || before.bootCount != current.bootCount) return
         val elapsed = current.elapsedMs - before.elapsedMs
         if (elapsed !in 1L..MAX_INTERVAL_MS) return
         val wall = current.wallMs - before.wallMs

@@ -25,6 +25,19 @@ class ResourceHistoryTest {
         assertEquals(80L,result.lowestAvailableRam!!)
     }
 
+    @Test fun fieldCoverageDoesNotCountMissingOrInvalidValues() {
+        val r = ResourceHistory()
+        r.accept(row(1000,1,10))
+        r.accept(row(1000,1,10))
+        r.accept(ResourceObservation(2000,2000,1,200,201,-1,7,List(6) { null }))
+        r.accept(ResourceObservation(3000,3000,1,200,null,null,null,List(6) { null }))
+        assertEquals(3,r.snapshots)
+        assertEquals(1L,r.ramObservations)
+        assertEquals(1L,r.storageObservations)
+        assertEquals(1L,r.thermalObservations)
+        assertEquals(100L,r.lowestAvailableRam!!)
+    }
+
     @Test fun rejectsUnknownBootAndClockDiscontinuity() {
         val result = ResourceHistory()
         result.accept(row(1000,null,10))

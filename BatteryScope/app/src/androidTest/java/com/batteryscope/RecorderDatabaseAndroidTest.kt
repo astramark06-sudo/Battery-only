@@ -290,6 +290,48 @@ class RecorderDatabaseAndroidTest {
         assertTrue(allowed.contains("rate-eligible adjacent interval duration 60s"))
     }
 
+    @Test fun rawMetadataAndAcquisitionWindowsSurvivePortableBackup() = database { source ->
+        val now = 2_000_000_000_000L
+        val day = 86_400_000L
+        val intent = android.content.Intent(android.content.Intent.ACTION_BATTERY_CHANGED)
+            .putExtra(android.os.BatteryManager.EXTRA_VOLTAGE,0)
+            .putExtra(android.os.BatteryManager.EXTRA_TEMPERATURE,-12)
+            .putExtra(android.os.BatteryManager.EXTRA_STATUS,999)
+            .putExtra(android.os.BatteryManager.EXTRA_SCALE,"wrong type")
+        val raw = BatteryBroadcastMetadata.capture(intent)
+        assertEquals(0,raw.getJSONObject("values").getInt("voltage"))
+        assertEquals(999,raw.getJSONObject("values").getInt("status"))
+        assertFalse(raw.getJSONObject("values").has("level"))
+        assertEquals("String",raw.getJSONObject("invalid_types").getString("scale"))
+        assertEquals(-1.2,BatteryBroadcastMetadata.temperatureC(-12)!!,0.00001)
+        assertNull(BatteryBroadcastMetadata.temperatureC(null))
+        assertNull(BatteryBroadcastMetadata.temperatureC(1001))
+        assertFalse(BatteryBroadcastMetadata.capture(null).getBoolean("available"))
+        fun resource(wall: Long, elapsed: Long, ram: Long): String = org.json.JSONObject()
+            .put("@device/captured_wall_ms",wall).put("@device/captured_elapsed_ms",elapsed)
+            .put("@device/memory/total_bytes",400_000_000L)
+            .put("@device/memory/available_bytes",ram).toString()
+        sample(source,now-2*day)
+        sample(source,now-60_000)
+        sample(source,now-30_000)
+        source.writableDatabase.execSQL("UPDATE samples SET power_supply_json=? WHERE timestamp_ms=?",arrayOf(resource(now-2*day,1000,100_000_000),now-2*day))
+        source.writableDatabase.execSQL("UPDATE samples SET power_supply_json=? WHERE timestamp_ms=?",arrayOf(resource(now-60_000,2000,200_000_000),now-60_000))
+        val metadata = org.json.JSONObject().put("@battery_raw_v1",raw).toString()
+        source.writableDatabase.execSQL("UPDATE samples SET power_supply_json=?,battery_voltage_mv=0,temperature_c=-1.2 WHERE timestamp_ms=?",arrayOf(metadata,now-30_000))
+        val bytes = backup(source)
+        database { target ->
+            assertEquals(HistoryBackup.Counts(3,0),target.restoreBackup(ByteArrayInputStream(bytes)))
+            assertArrayEquals(bytes,backup(target))
+            val report = target.historySummary(now)
+            val daily = report.substringAfter("=== DEVICE RESOURCE HISTORY (LAST 24 HOURS) ===").substringBefore("===")
+            val weekly = report.substringAfter("=== DEVICE RESOURCE HISTORY (LAST 7 DAYS) ===").substringBefore("===")
+            assertTrue(daily.contains("Distinct resource snapshots: 1"))
+            assertTrue(daily.contains("valid snapshots 1/1"))
+            assertTrue(weekly.contains("Distinct resource snapshots: 2"))
+            assertEquals(1L,number(target.readableDatabase,"SELECT COUNT(*) FROM samples WHERE battery_voltage_mv=0 AND temperature_c<0"))
+        }
+    }
+
     @Test fun actualAndroidOpenHelperMigratesV4WithoutDroppingRawRecords() {
         val name = name()
         try {

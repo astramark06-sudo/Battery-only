@@ -1,5 +1,11 @@
 # BatteryScope changelog
 
+## 2026-11-25 — Raw broadcast metadata and six resource history windows (R29/R33 partial)
+
+- Preserve allowlisted integer/boolean/string battery broadcast extras, absent/wrong-type distinction and battery property status per sample in existing power_supply_json under @battery_raw_v1 and related metadata. Retain zero/negative voltage as raw evidence and signed in-range temperature. No arbitrary broadcast serialization. Read timestamp denotes app acquisition, not sensor timestamp. Missing prior raw fields cannot be reconstructed; property sentinel values still represented by status. Existing schema/CSV/portable format unchanged.
+- Inventory-only consumers filter for inventory/resource keys so metadata-only battery rows cannot hide the last actual inventory. Resource analytics decode eligible snapshots in one ID-ordered scan across 24h/7d/30d/90d/365d/all-time acquisition windows, independent per-window totals and valid field counts. Last sample timestamp now uses readable local time and offset. Added JVM coverage and Android typed metadata/portable round-trip/window tests.
+- Counter-duration regression fix ac20070 included in cumulative source. New CI required. Metadata increases storage and full-history JSON scanning; Android long-history latency/storage benchmark and persistent aggregation remain open. No signing, package, version, permissions, schema or history deletion changes.
+
 ## 2026-11-25 — Conservative boot and permission-aware endpoint correlation (R30 partial)
 
 - R30: rate eligibility now requires a nonnegative known matching boot count at both endpoints. Older unknown-boot records remain in raw storage/exports and gap counts, but are excluded from rate/session estimates. Summary counts unknown-identity intervals explicitly. App correlation now additionally requires recorded Usage Access at both endpoints; live recorder checks permission before and after the usage query and does not store a package when access is unavailable.

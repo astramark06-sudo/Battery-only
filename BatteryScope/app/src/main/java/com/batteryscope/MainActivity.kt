@@ -72,6 +72,7 @@ class MainActivity : Activity() {
         val energyNwh: Long?,
         val energyPropertyStatus: String,
         val temperatureC: Double?,
+        val rawTemperatureTenths: Int?,
         val batteryBroadcastAvailable: Boolean,
         val status: String,
         val plugged: String,
@@ -404,9 +405,9 @@ class MainActivity : Activity() {
             level > scale -> "EXTRA_LEVEL_EXCEEDS_SCALE"
             else -> "AVAILABLE"
         }
-        val rawVoltage = intent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
-        val rawTemp = intent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
-        val temp = if (rawTemp in 0..1000) rawTemp / 10.0 else null
+        val rawVoltage = BatteryBroadcastMetadata.int(intent,BatteryManager.EXTRA_VOLTAGE)
+        val rawTemp = BatteryBroadcastMetadata.int(intent,BatteryManager.EXTRA_TEMPERATURE)
+        val temp = BatteryBroadcastMetadata.temperatureC(rawTemp)
         val statusCode = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
         val status = when (statusCode) {
             BatteryManager.BATTERY_STATUS_CHARGING -> "CHARGING"
@@ -443,7 +444,7 @@ class MainActivity : Activity() {
         return Reading(
             percent = percent,
             batteryPercentStatus = percentStatus,
-            rawVoltageMv = rawVoltage.takeIf { it > 0 },
+            rawVoltageMv = rawVoltage,
             currentUa = currentRead.value,
             currentPropertyStatus = currentRead.status,
             averageCurrentUa = averageRead.value,
@@ -453,6 +454,7 @@ class MainActivity : Activity() {
             energyNwh = energyRead.value,
             energyPropertyStatus = energyRead.status,
             temperatureC = temp,
+            rawTemperatureTenths = rawTemp,
             batteryBroadcastAvailable = intent != null,
             status = status,
             plugged = plugged,
@@ -555,7 +557,8 @@ class MainActivity : Activity() {
             appendLine("ACTION_BATTERY_CHANGED: " + if (reading.batteryBroadcastAvailable) "available" else "NOT AVAILABLE from Android sticky broadcast")
             appendLine("Battery percentage: " + (reading.percent?.let { "available (${it}%)" } ?: "unavailable — " + reading.batteryPercentStatus))
             appendLine("Battery voltage: raw EXTRA_VOLTAGE=${reading.rawVoltageMv ?: "missing"} mV field; quality=${voltageAssessment.status}")
-            appendLine("Battery temperature: " + (reading.temperatureC?.let { "available (${it} °C)" } ?: "unavailable — EXTRA_TEMPERATURE missing or outside accepted range"))
+            appendLine("Battery temperature: " + (reading.temperatureC?.let { "available (${it} °C)" } ?: "unavailable — EXTRA_TEMPERATURE missing or outside accepted range") +
+                " • raw tenths °C field=" + (reading.rawTemperatureTenths?.toString() ?: "missing / wrong type"))
             appendLine("Android charge counter: ${reading.chargeCounterUah?.let { "available (${it} µAh)" } ?: "unavailable — " + reading.chargeCounterPropertyStatus}")
             appendLine("Instantaneous battery current: raw API=${reading.currentUa?.let { "$it µA" } ?: reading.currentPropertyStatus}; quality=${currentAssessment.status}")
             appendLine("Average battery current: raw API=${reading.averageCurrentUa?.let { "$it µA" } ?: reading.averageCurrentPropertyStatus}; not used for watt calculation")
