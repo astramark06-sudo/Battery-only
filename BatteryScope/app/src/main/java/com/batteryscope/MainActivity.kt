@@ -35,14 +35,12 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var historyText: TextView
     private lateinit var capacityText: TextView
+    private lateinit var deviceText: TextView
     private var historyUpdatedAtMs = 0L
     private var historyLoadInFlight = false
     private var capacityLoadInFlight = false
     private var exportInFlight = false
     private lateinit var samplingModeButton: Button
-    private var cachedSupplyNodes: Map<String, String> = emptyMap()
-    private var cachedSupplyRootVisible = false
-    private var supplyScanCompletedAtMs = 0L
 
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private lateinit var telemetryThread: HandlerThread
@@ -82,22 +80,6 @@ class MainActivity : Activity() {
         val cycleCount: Int?,
         val supplies: Map<String, String>,
         val supplyRootReadable: Boolean
-    )
-
-    private val supplyAttributes = listOf(
-        "type", "online", "present", "status", "health", "technology", "capacity",
-        "voltage_now", "voltage_avg", "voltage_max", "voltage_min",
-        "current_now", "current_avg", "current_max", "power_now",
-        "charge_counter", "charge_now", "charge_full", "charge_full_design",
-        "temp", "temp_alert_min", "temp_alert_max", "charge_type", "usb_type",
-        "real_type", "input_current_limit", "input_current_limit_max",
-        "input_voltage_limit", "input_voltage_limit_max", "input_power_limit",
-        "constant_charge_current", "constant_charge_voltage",
-        "constant_charge_current_max", "constant_charge_voltage_max",
-        "charge_control_limit", "charge_control_limit_max",
-        "charge_control_start_threshold", "charge_control_end_threshold",
-        "current_limit", "voltage_limit", "max_voltage", "max_current",
-        "fastcharger", "fast_chg_type", "voocchg_ing", "charge_technology", "adapter_fw_update", "mmi_charging_enable", "stop_charging_enable", "chargerid_volt", "charger_ic", "usb_status", "typec_cc_orientation", "typec_sbu_voltage"
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -177,6 +159,7 @@ class MainActivity : Activity() {
         historyText.text = "Recorder starts automatically. Local history accumulates across days, weeks and months."
         capacityText = addPanel(content, "05  BATTERY HEALTH & FULL-CHARGE CAPACITY")
         capacityText.text = "Capacity estimate not available yet. Record several charging/discharging sessions with the recorder enabled."
+        deviceText = addPanel(content, "06  DEVICE RESOURCES  •  PUBLIC ANDROID APIs")
 
         val note = makeText(11f, Color.rgb(155, 170, 191), false).apply {
             text = "Measurement rules: battery current is not USB input current. Only USB/charger supply nodes can report charger-side voltage/current. BatteryScope does not decode the proprietary SuperDart wire handshake, alter the selected USB protocol or write charging controls."
@@ -286,80 +269,8 @@ class MainActivity : Activity() {
 
     /** Enumerates read-only kernel power, USB-C, PD, thermal and hwmon class attributes. */
     private fun readSupplyNodes(): Pair<Map<String, String>, Boolean> {
-        val now = android.os.SystemClock.elapsedRealtime()
-        // BatteryManager refreshes on the dashboard cadence; sysfs traversal is separately cached.
-        if (supplyScanCompletedAtMs > 0L && now >= supplyScanCompletedAtMs &&
-            now - supplyScanCompletedAtMs < SYSFS_UI_REFRESH_MS) {
-            return cachedSupplyNodes to cachedSupplyRootVisible
-        }
-        val roots = linkedMapOf(
-            "power_supply" to "/sys/class/power_supply",
-            "typec" to "/sys/class/typec",
-            "usb_power_delivery" to "/sys/class/usb_power_delivery",
-            "dual_role_usb" to "/sys/class/dual_role_usb",
-            "usb_role" to "/sys/class/usb_role",
-            "thermal" to "/sys/class/thermal",
-            "hwmon" to "/sys/class/hwmon"
-        )
-        val result = linkedMapOf<String, String>()
-        val excluded = setOf("device", "subsystem", "driver", "power", "firmware_node", "of_node")
-        var visibleRoots = 0
-        var powerSupplyRootVisible = false
-        for ((prefix, rootPath) in roots) {
-            val root = File(rootPath)
-            if (!root.exists()) {
-                result["@diagnostic/" + prefix + "/root"] = "ABSENT_OR_HIDDEN_BY_SELINUX"
-                continue
-            }
-            val dirs = try { root.listFiles()?.sortedBy { it.name } } catch (_: Throwable) { null }
-            if (dirs == null) {
-                result["@diagnostic/" + prefix + "/root"] = "LIST_DENIED"
-                continue
-            }
-            visibleRoots++
-            if (prefix == "power_supply") powerSupplyRootVisible = true
-            result["@diagnostic/" + prefix + "/root"] = "VISIBLE"
-            for (dir in dirs) {
-                if (result.size >= 1200) break
-                if (dir.name in excluded) continue
-                val attrs = try {
-                    if (dir.isDirectory) dir.listFiles()?.sortedBy { it.name } else listOf(dir)
-                } catch (_: Throwable) { null }
-                if (attrs == null) {
-                    result["@diagnostic/" + prefix + "/" + dir.name] = "LIST_DENIED"
-                    continue
-                }
-                for (file in attrs) {
-                    if (result.size >= 1200) break
-                    if (file.name in excluded || !file.isFile) continue
-                    val value = try {
-                        if (!file.canRead()) "READ_DENIED"
-                        else file.inputStream().bufferedReader().use { it.readLine()?.trim()?.take(240) ?: "EMPTY" }
-                    } catch (t: Throwable) {
-                        "ERROR:" + t.javaClass.simpleName + ":" + (t.message ?: "unknown")
-                    }
-                    val key = if (prefix == "power_supply") dir.name + "/" + file.name
-                        else prefix + "/" + dir.name + "/" + file.name
-                    result[key] = value
-                }
-            }
-        }
-        result["@diagnostic/visible_roots"] = visibleRoots.toString()
-        val capturedFields = result.keys.count { !it.startsWith("@") }
-        result["@field_count"] = capturedFields.toString()
-        result["@field_limit"] = "1200"
-        result["@field_limit_reached"] = (result.size >= 1200).toString()
-        if (Build.VERSION.SDK_INT >= 29) {
-            result["@android_thermal_status"] = try {
-                (getSystemService(POWER_SERVICE) as android.os.PowerManager).currentThermalStatus.toString()
-            } catch (t: Throwable) {
-                "UNAVAILABLE:" + t.javaClass.simpleName + ":" + (t.message ?: "unknown")
-            }
-        }
-        cachedSupplyNodes = result
-        cachedSupplyRootVisible = powerSupplyRootVisible
-        supplyScanCompletedAtMs = android.os.SystemClock.elapsedRealtime()
-        return result to powerSupplyRootVisible
+        val fields = HardwareSnapshotCache.snapshot(applicationContext, SYSFS_UI_REFRESH_MS)
+        return KernelInventory.dashboard(fields) to (fields["power_supply/@root"] == "VISIBLE")
     }
 
     private fun buildMeasurementDiagnosis(nodes: Map<String, String>, powerSupplyRootVisible: Boolean): String {
@@ -387,7 +298,7 @@ class MainActivity : Activity() {
         } else {
             lines += "Last automatic boot-resume failure: none recorded"
         }
-        val nonSupplyRoots = setOf("typec", "usb_power_delivery", "dual_role_usb", "usb_role", "thermal", "hwmon", "@diagnostic")
+        val nonSupplyRoots = KernelInventory.roots.map { it.name }.toSet() - "power_supply"
         val supplies = nodes.keys.filter { !it.startsWith("@") && it.substringBefore("/") !in nonSupplyRoots }
             .map { it.substringBefore("/") }.distinct()
         val external = supplies.filter { it !in listOf("battery", "bms", "main") }
@@ -403,8 +314,8 @@ class MainActivity : Activity() {
             lines += "Supply " + name + ": type=" + (nodes[base + "type"] ?: "not exported") +
                 "; online=" + (nodes[base + "online"] ?: "not exported")
             if (voltage != null && current != null &&
-                voltage in 1_000_000L..30_000_000L && kotlin.math.abs(current) <= 20_000_000L) {
-                if (usbSupply) {
+                voltage in 1_000_000L..30_000_000L && current in -20_000_000L..20_000_000L) {
+                if (usbSupply && nodes[base + "online"] == "1") {
                     usbPairFound = true
                     lines += "  USB-source same-supply V/I candidate: " +
                         String.format(Locale.US, "%.3f V / %.3f A", voltage / 1_000_000.0, current / 1_000_000.0)
@@ -413,7 +324,7 @@ class MainActivity : Activity() {
                         "; source path/driver semantics still require handset validation"
                 } else {
                     nonUsbPairFound = true
-                    lines += "  External same-supply V/I pair exists, but supply name/type does not identify USB; NOT classified as VBUS/IBUS or USB input power."
+                    lines += "  Same-supply V/I pair lacks confirmed USB identity or online=1; NOT classified as USB input power."
                     lines += "  Raw candidate: " + voltage + " µV / " + current + " µA"
                 }
             } else {
@@ -428,7 +339,7 @@ class MainActivity : Activity() {
         if (!usbPairFound) {
             lines += "USB input V/A/W unavailable as a USB-identified source: no external supply with USB name/type exposed a plausible same-supply voltage_now/current_now pair."
         }
-        if (nonUsbPairFound) lines += "At least one external supply exposed a numeric pair, but its source identity is not USB; no USB claim was made for it."
+        if (nonUsbPairFound) lines += "At least one external supply exposed a numeric pair without confirmed USB identity or online state; no USB claim was made for it."
         val usb = nodes.filterKeys {
             it.startsWith("typec/") || it.startsWith("usb_power_delivery/") ||
                 it.startsWith("dual_role_usb/") || it.startsWith("usb_role/")
@@ -547,10 +458,19 @@ class MainActivity : Activity() {
             else String.format(Locale.US, "%.3f %s", value, unit)
         }
 
+        val resourceReport = buildString {
+            val captured = reading.supplies["@device/captured_elapsed_ms"]?.toLongOrNull()
+            if (captured != null) appendLine("Snapshot age: " + ((android.os.SystemClock.elapsedRealtime()-captured).coerceAtLeast(0L)/1000) + " seconds")
+            appendLine("Network counters are cumulative bytes since boot, not battery energy or instantaneous speed.")
+            appendLine("CPU processor count is runtime availability, not a utilization reading. Sensor list is inventory only.")
+            reading.supplies.filterKeys { it.startsWith("@device/") }.toSortedMap().forEach { (key,value) ->
+                appendLine(key.removePrefix("@device/") + ": " + value)
+            }
+        }
         val statusReport = "${reading.status}   •   ${reading.percent?.let { "$it%" } ?: "--"}   •   POWER SOURCE: ${reading.plugged}"
         val external = reading.supplies.filterKeys { key ->
             val node = key.substringBefore('/').lowercase(Locale.US)
-            node !in listOf("battery", "bms", "main")
+            !key.startsWith("@") && node !in listOf("battery", "bms", "main")
         }
         val batteryNodes = reading.supplies.filterKeys { key ->
             val node = key.substringBefore('/').lowercase(Locale.US)
@@ -625,6 +545,7 @@ class MainActivity : Activity() {
                 batteryText.text = batteryReport
                 chargerText.text = chargerReport
                 diagnosticText.text = diagnosticReport
+                deviceText.text = resourceReport
                 refreshHistoryDisplay(false)
             }
         }
@@ -969,7 +890,7 @@ class MainActivity : Activity() {
     }
 
     companion object {
-        private const val SYSFS_UI_REFRESH_MS = 15_000L
+        private const val SYSFS_UI_REFRESH_MS = 60_000L
         private const val PENDING_EXPORT_NAME = "pending_export_name"
         private const val CSV_EXPORT_REQUEST_CODE = 5101
         private const val BACKUP_IMPORT_REQUEST_CODE = 5103

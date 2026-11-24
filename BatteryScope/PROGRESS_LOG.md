@@ -1,5 +1,9 @@
 # BatteryScope persistent progress log
 
+## 2026-11-25 — Shared inventory and resource telemetry
+
+Unified dashboard and recorder hardware inventory via shared bounded read-only allowlist, full source paths in stored JSON, cached snapshots with acquisition timestamps. Added public Android RAM, internal storage, TrafficStats device/mobile/own UID cumulative bytes, power-save/idle/interactive/thermal status and headroom, processor count and sensor-type inventory. No extra permission, sensor streams, network transmission or schema/CSV changes. CPU/GPU frequency fields are raw optional sysfs only, not utilization. USB candidate requires online=1 and same power_supply source. Dashboard resource snapshot refreshes no faster than 60 s; recorder inventory cadence remains 120 s. Device support and monitoring overhead remain unverified. CI pending.
+
 ## 2026-11-24 — Combined history and gap scans
 
 Combined continuity and rate summaries in the same cursor pass per window; six historical windows now use six rather than twelve summary/gap scans, with unchanged >90-second gap threshold. Recent-session and capacity scans are separate. Added gap arithmetic regression tests; actual handset throughput and retained-history memory remain to be benchmarked. CI pending.

@@ -413,83 +413,14 @@ class BatteryRecorderService : Service() {
         }
     }
 
-    private fun readHardwareTrees(): JSONObject {
-        val result = JSONObject()
-        val roots = listOf(
-            "/sys/class/power_supply" to 3,
-            "/sys/class/typec" to 4,
-            "/sys/class/usb_power_delivery" to 5,
-            "/sys/class/dual_role_usb" to 3,
-            "/sys/class/usb_role" to 3,
-            "/sys/class/thermal" to 3,
-            "/sys/class/hwmon" to 3,
-            "/sys/bus/usb/devices" to 3
-        )
-        val skip = setOf("device", "subsystem", "driver", "power", "firmware_node", "of_node")
-        var count = 0
-        val maxFields = MAX_SYSFS_FIELDS
-        for ((rootPath, maxDepth) in roots) {
-            val root = java.io.File(rootPath)
-            val prefix = root.name
-            if (!root.exists()) {
-                result.put(prefix + "/@root", "ABSENT_OR_HIDDEN_BY_SELINUX")
-                continue
-            }
-            if (!root.canRead()) {
-                result.put(prefix + "/@root", "READ_DENIED")
-                continue
-            }
-            fun walk(directory: java.io.File, depth: Int) {
-                if (depth > maxDepth || count >= maxFields) return
-                val children = try { directory.listFiles()?.sortedBy { it.name } } catch (_: Throwable) { null }
-                if (children == null) {
-                    result.put(prefix + "/" + directory.path.removePrefix(root.path).trim('/') + "/@list", "LIST_DENIED")
-                    return
-                }
-                for (child in children) {
-                    if (count >= maxFields) break
-                    if (child.isDirectory) {
-                        if (child.name !in skip) walk(child, depth + 1)
-                    } else if (child.isFile) {
-                        val isUsbBus = rootPath == "/sys/bus/usb/devices"
-                        val usbDescriptorFields = setOf("idVendor", "idProduct", "bcdDevice", "manufacturer", "product",
-                            "bDeviceClass", "bDeviceSubClass", "bDeviceProtocol", "speed", "authorized")
-                        if (isUsbBus && child.name !in usbDescriptorFields) continue
-                        if (child.name.equals("serial", ignoreCase = true)) continue
-                        count++
-                        val value = try {
-                            if (!child.canRead()) "READ_DENIED"
-                            else child.inputStream().bufferedReader().use { it.readLine()?.take(240) ?: "EMPTY" }
-                        } catch (t: Throwable) {
-                            "ERROR:" + t.javaClass.simpleName + ":" + (t.message ?: "unknown")
-                        }
-                        val relative = child.path.removePrefix(root.path).trim('/')
-                        result.put(prefix + "/" + relative, value)
-                    }
-                }
-            }
-            walk(root, 0)
-            if (count >= maxFields) break
-        }
-        result.put("@field_count", count)
-        result.put("@field_limit", maxFields)
-        result.put("@field_limit_reached", count >= maxFields)
-        if (Build.VERSION.SDK_INT >= 29) {
-            try {
-                val power = getSystemService(POWER_SERVICE) as PowerManager
-                result.put("@android_thermal_status", power.currentThermalStatus)
-            } catch (t: Throwable) {
-                result.put("@android_thermal_status", "UNAVAILABLE:" + t.javaClass.simpleName)
-            }
-        }
-        return result
-    }
+    private fun readHardwareTrees(): JSONObject =
+        JSONObject(HardwareSnapshotCache.snapshot(applicationContext, SYSFS_INTERVAL_MS))
 
     private fun findUsbCandidate(json: JSONObject): Pair<Long, Long>? {
         val keys = json.keys()
         while (keys.hasNext()) {
             val key = keys.next()
-            if (!key.endsWith("/voltage_now")) continue
+            if (!key.startsWith("power_supply/") || !key.endsWith("/voltage_now")) continue
             val supplyPath = key.substringBeforeLast('/')
             val supplyName = supplyPath.substringAfterLast('/')
             if (supplyName.lowercase(Locale.US) in setOf("battery", "bms", "main")) continue
@@ -497,7 +428,7 @@ class BatteryRecorderService : Service() {
             val current = json.optString(supplyPath + "/current_now").toLongOrNull() ?: continue
             val type = json.optString(supplyPath + "/type").uppercase(Locale.US)
             val looksUsb = supplyName.contains("usb", true) || type.contains("USB")
-            if (looksUsb && voltage in 1_000_000L..30_000_000L && abs(current) <= 20_000_000L) {
+            if (looksUsb && json.optString(supplyPath + "/online") == "1" && voltage in 1_000_000L..30_000_000L && current in -20_000_000L..20_000_000L) {
                 return voltage to current
             }
         }
@@ -589,7 +520,6 @@ class BatteryRecorderService : Service() {
         const val ACTION_RECONFIGURE = "com.batteryscope.action.RECONFIGURE_RECORDER"
         const val SAMPLE_INTERVAL_MS = 30_000L
         private const val SYSFS_INTERVAL_MS = 120_000L
-        private const val MAX_SYSFS_FIELDS = 900
         private const val CHANNEL_ID = "batteryscope_recorder"
         private const val NOTIFICATION_ID = 301
     }
