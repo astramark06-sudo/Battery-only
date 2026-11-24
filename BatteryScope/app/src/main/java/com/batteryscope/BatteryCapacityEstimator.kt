@@ -24,7 +24,7 @@ internal data class CapacityEstimate(
 internal object BatteryCapacityEstimator {
     const val DESIGN_CAPACITY_MAH = 4500.0
     private const val MIN_SOC_CHANGE_PERCENT = 12
-    private const val MAX_SESSION_GAP_MS = 90_000L
+    private const val NOMINAL_UAH_PER_PERCENT = 45_000L
 
     fun estimate(samples: List<CapacitySample>): CapacityEstimate? =
         estimateOrdered(samples.sortedWith(compareBy<CapacitySample> { it.bootCount ?: Int.MIN_VALUE }
@@ -35,8 +35,7 @@ internal object BatteryCapacityEstimator {
         val estimates = mutableListOf<Double>()
         var first: CapacitySample? = null
         var previous: CapacitySample? = null
-        val nominalLevels = mutableSetOf<Int>()
-        var allPairsNominal = true
+        var nominalSessions = 0
 
         fun flush() {
             val a = first
@@ -52,7 +51,13 @@ internal object BatteryCapacityEstimator {
                         ((mode(a) == "CHARGING" && deltaPercent > 0) || (mode(a) == "DISCHARGING" && deltaPercent < 0))) {
                         val capacityMah = abs(deltaCharge).toDouble() /
                             (abs(deltaPercent).toDouble() / 100.0) / 1000.0
-                        if (capacityMah in 1500.0..8000.0) estimates += capacityMah
+                        if (capacityMah in 1500.0..8000.0) {
+                            estimates += capacityMah
+                            // Per accepted session: exact nominal SOC proportionality can also
+                            // occur with a constant offset. It is a warning, not proof of causation.
+                            if (deltaCharge == deltaPercent.toLong() * NOMINAL_UAH_PER_PERCENT)
+                                nominalSessions++
+                        }
                     }
                 }
             }
@@ -64,10 +69,6 @@ internal object BatteryCapacityEstimator {
             val mode = mode(sample)
             val percent = sample.percent
             val counter = sample.chargeCounterUah
-            if (percent != null && percent in 1..99 && counter != null && counter >= 0L) {
-                nominalLevels += percent
-                if (counter != percent.toLong() * 45_000L) allPairsNominal = false
-            }
             if (sample.bootCount == null || percent == null || percent !in 1..99 ||
                 counter == null || counter < 0L || mode == null) {
                 flush()
@@ -77,8 +78,12 @@ internal object BatteryCapacityEstimator {
             if (prev != null) {
                 val interval = if (sample.elapsedRealtimeMs != null && prev.elapsedRealtimeMs != null)
                     sample.elapsedRealtimeMs - prev.elapsedRealtimeMs else sample.timestampMs - prev.timestampMs
-                if (prev.bootCount != sample.bootCount || mode(prev) != mode ||
-                    interval !in 1L..MAX_SESSION_GAP_MS) flush()
+                val socDelta = percent - requireNotNull(prev.percent)
+                val counterDelta = counter - requireNotNull(prev.chargeCounterUah)
+                val reversal = if (mode == "CHARGING") socDelta < 0 || counterDelta < 0L
+                    else socDelta > 0 || counterDelta > 0L
+                if (mode(prev) != mode || reversal ||
+                    !RecorderTimeMath.isRateInterval(interval, prev.bootCount, sample.bootCount)) flush()
             }
             if (first == null) first = sample
             previous = sample
@@ -89,7 +94,7 @@ internal object BatteryCapacityEstimator {
         val median = if (sorted.size % 2 == 1) sorted[sorted.size / 2]
             else (sorted[sorted.size / 2 - 1] + sorted[sorted.size / 2]) / 2.0
         val spread = if (median > 0.0) (sorted.last() - sorted.first()) / median * 100.0 else 100.0
-        val nominalMatch = nominalLevels.size >= 3 && allPairsNominal
+        val nominalMatch = nominalSessions > 0
         val confidence = when {
             nominalMatch -> "LOW"
             sorted.size >= 5 && spread <= 15.0 -> "HIGH"
@@ -120,18 +125,18 @@ internal object BatteryCapacityEstimator {
         }
         return buildString {
             appendLine("Estimated current capacity: ~${estimate.capacityMah.toInt()} mAh")
-            appendLine(if (estimate.nominalCounterMatch) "Apparent ratio to design: ~${String.format(java.util.Locale.US, "%.1f", estimate.healthPercent)}% (not verified health)" else "Estimated battery health: ~${String.format(java.util.Locale.US, "%.1f", estimate.healthPercent)}%")
-            if (estimate.nominalCounterMatch) appendLine("Warning: the counter exactly follows nominal 4,500 mAh × reported SOC. Independence is unverified; this cannot establish actual battery wear.")
+            appendLine("Apparent ratio to design: ~${String.format(java.util.Locale.US, "%.1f", estimate.healthPercent)}% (not verified health)")
+            if (estimate.nominalCounterMatch) appendLine("Warning: at least one accepted session has counter change exactly proportional to nominal 4,500 mAh × SOC change. Independence is unverified; this cannot establish actual battery wear.")
             appendLine("Original design capacity: 4,500 mAh")
-            appendLine("Confidence: ${estimate.confidence} • ${estimate.validSessions} valid sessions • ${String.format(java.util.Locale.US, "%.1f", estimate.spreadPercent)}% session spread")
+            appendLine("Repeatability indicator (not calibrated accuracy): ${estimate.confidence} • ${estimate.validSessions} valid sessions • ${String.format(java.util.Locale.US, "%.1f", estimate.spreadPercent)}% session spread")
             appendLine()
             appendLine("Estimate uses Android's remaining-charge counter against state-of-charge change. It is not a laboratory capacity test.")
-            append("Collect more normal charge/discharge sessions to improve confidence. Avoid deliberately draining the battery to 0%.")
+            append("Collect more normal charge/discharge sessions to assess repeatability. Avoid deliberately draining the battery to 0%.")
         }
     }
 
     private fun mode(sample: CapacitySample): String? = when {
-        sample.status == "CHARGING" || (sample.status == "FULL" && BatteryStateMath.connected(sample.plug)) -> "CHARGING"
+        sample.status == "CHARGING" -> "CHARGING"
         BatteryStateMath.discharging(sample.status, sample.plug) -> "DISCHARGING"
         else -> null
     }

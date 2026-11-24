@@ -1,5 +1,15 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Measurement and capacity quality corrections (R03–R05)
+
+- R03: instantaneous BatteryManager current rejects signed integer/long sentinels and readings outside a broad ±20,000,000 µA rejection-only plausibility envelope. This engineering guard is not a calibrated device operating range; values inside it still require unit and polarity validation. Raw recorder values are retained, with no scale/sign guesses.
+- R04: exact nominal charge-counter/SOC proportionality is now checked per accepted capacity session, including a constant offset. Any matching accepted session retains the LOW indicator, regardless of unrelated rows. All ratios to design are labelled unverified health; session repeatability is not calibrated accuracy.
+- R05: capacity segments split at SOC/counter reversals, known reboot, state change or intervals outside the shared 1–90 s policy. FULL idle no longer extends a segment. This does not yet identify every same-direction counter jump; R06 remains open.
+- Five JVM regression test methods added. Independent Kotlin harness compiled the exact proposed production files and their unchanged dependencies (Git blob hashes matched), and passed 35 assertions for boundary/sentinel rejection, nominal-session masking, reversals, FULL/short intervals, valid capacity, reboot, streaming and report semantics. Full PR Android CI and handset validation remain required.
+- Baseline `3a7908f60d1debd3cd26facfd5dfa254e8f9384c`: [build and JVM job passed; emulator in progress at inspection](https://github.com/astramark06-sudo/Battery-only/actions/runs/45471334893). Draft PR #3 stays unmerged. No change to schema v5, application ID, version 1.15/16, signing or retained history.
+- Next: R06 counter quantization/jump handling, R09 continuity coverage, R10/R11 cadence and recorder failure status, then long-history performance. Signing and device measurement remain critical release blockers.
+
+
 ## 2026-11-25 — Audit R07/R08 report corrections (CI pending)
 
 Rolling history, session, resource, capacity and last-reading queries now use inclusive reference-time bounds plus fixed sample ID ranges captured once per report. Future-dated rows remain in raw storage/exports but cannot enter these summaries. Last level is labelled recorded (not live) and its age is displayed. Session threshold predictions explicitly show both total from session start and remaining from the last sample; observed crossings retain their start-relative meaning. Added disposable Android database tests for a retained future-dated sample and a 30-minute session with a further 30-minute forecast. R07/R08 source fixes implemented; emulator regression and physical-device verification pending. No schema, data deletion, signing or version changes. The prior refresh-gate commit is `b6041c4224363ed9a488a2ca59a4fd1a49c8a840`.

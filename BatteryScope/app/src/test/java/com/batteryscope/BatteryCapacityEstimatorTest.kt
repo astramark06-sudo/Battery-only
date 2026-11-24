@@ -76,6 +76,65 @@ class BatteryCapacityEstimatorTest {
         assertNull(BatteryCapacityEstimator.estimate(samples))
     }
     @Test
+    fun unrelatedCounterReadingCannotMaskNominalSessions() {
+        val samples = mutableListOf<CapacitySample>()
+        for (i in 0..4) {
+            val start = i * 300_000L + 1000L
+            samples += CapacitySample(start, 1, 40, "CHARGING", "AC", 1_800_000L)
+            samples += CapacitySample(start + 30_000L, 1, 50, "CHARGING", "AC", 2_250_000L)
+            samples += CapacitySample(start + 60_000L, 1, 60, "CHARGING", "AC", 2_700_000L)
+            samples += CapacitySample(start + 90_000L, 1, 60, "FULL", "AC", 2_700_001L)
+        }
+        val result = requireNotNull(BatteryCapacityEstimator.estimate(samples))
+        assertEquals(5, result.validSessions)
+        org.junit.Assert.assertTrue(result.nominalCounterMatch)
+        assertEquals("LOW", result.confidence)
+    }
+
+    @Test
+    fun reversalDoesNotBridgeTwoInsufficientSegments() {
+        val samples = listOf(
+            CapacitySample(1000L, 1, 40, "CHARGING", "AC", 1_600_000L),
+            CapacitySample(31000L, 1, 49, "CHARGING", "AC", 1_960_000L),
+            CapacitySample(61000L, 1, 48, "CHARGING", "AC", 1_920_000L),
+            CapacitySample(91000L, 1, 58, "CHARGING", "AC", 2_320_000L)
+        )
+        assertNull(BatteryCapacityEstimator.estimate(samples))
+    }
+
+    @Test
+    fun counterOnlyReversalSplitsSessionAndFullIdleDoesNotExtendIt() {
+        val reset = listOf(
+            CapacitySample(1000L, 1, 40, "CHARGING", "AC", 1_600_000L),
+            CapacitySample(31000L, 1, 49, "CHARGING", "AC", 1_960_000L),
+            CapacitySample(61000L, 1, 50, "CHARGING", "AC", 1_900_000L),
+            CapacitySample(91000L, 1, 59, "CHARGING", "AC", 2_360_000L)
+        )
+        assertNull(BatteryCapacityEstimator.estimate(reset))
+        assertNull(BatteryCapacityEstimator.estimate(listOf(
+            CapacitySample(1000L, 1, 40, "CHARGING", "AC", 1_600_000L),
+            CapacitySample(31000L, 1, 60, "FULL", "AC", 2_400_000L)
+        )))
+    }
+
+    @Test
+    fun rejectsSubSecondContinuityAndFlagsNominalSlopeWithOffset() {
+        assertNull(BatteryCapacityEstimator.estimate(listOf(
+            CapacitySample(1000L, 1, 40, "CHARGING", "AC", 1_600_000L),
+            CapacitySample(1999L, 1, 60, "CHARGING", "AC", 2_400_000L)
+        )))
+        val estimate = requireNotNull(BatteryCapacityEstimator.estimate(listOf(
+            CapacitySample(1000L, 1, 40, "CHARGING", "AC", 1_810_000L),
+            CapacitySample(31000L, 1, 60, "CHARGING", "AC", 2_710_000L)
+        )))
+        org.junit.Assert.assertTrue(estimate.nominalCounterMatch)
+        org.junit.Assert.assertTrue(BatteryCapacityEstimator.report(listOf(
+            CapacitySample(1000L, 1, 40, "CHARGING", "AC", 1_600_000L),
+            CapacitySample(31000L, 1, 60, "CHARGING", "AC", 2_400_000L)
+        )).contains("not verified health"))
+    }
+
+    @Test
     fun rejectsSessionsWithoutBootCountEvidence() {
         val samples = listOf(
             CapacitySample(1_000L, null, 40, "CHARGING", "USB", 1_800_000L),
