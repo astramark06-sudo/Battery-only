@@ -186,7 +186,7 @@ The recorder has two selectable sampling modes. **Continuous** (default) holds a
 
 ## Export and storage
 
-**Export all history** creates a CSV in app-private storage and opens Android's document picker to copy it to a user-selected destination. CSV rows include wall-clock timestamps, monotonic elapsedRealtime timestamps, boot count, sample data and event rows in chronological order. The app retains the internal export copy. CSV generation and copying run on background threads.
+**Prepare CSV history** creates a private export, then **Save / retry prepared export** opens Android's document picker. The same 28-column schema includes wall and monotonic timestamps, boot count, samples and events. Current exports group samples first and events second, each in original database record order; wall-clock rollback and duplicate timestamps do not reorder samples. Sort a separate analysis copy by wall time if desired; keep the original unedited for restore. Portable backups remain the lossless typed format. Generation, copying and verification run on background workers.
 
 Raw SQLite history has no automatic retention cap; storage use grows with recording duration. Export important history before uninstalling or clearing app data.
 

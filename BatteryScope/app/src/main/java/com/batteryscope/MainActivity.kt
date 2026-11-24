@@ -195,7 +195,7 @@ class MainActivity : Activity() {
             setOnClickListener {
                 AlertDialog.Builder(this@MainActivity)
                     .setTitle("Prepare CSV history")
-                    .setMessage("CSV may contain recorded app names and battery history. It is not encrypted. Prepare a private copy, then choose where to save it.")
+                    .setMessage("CSV may contain recorded app names and battery history. It is not encrypted. Samples and events are grouped in their original recorded sequence, not sorted by wall time. Use a portable backup for exact typed history. Prepare a private copy, then choose where to save it.")
                     .setNegativeButton("Cancel", null)
                     .setPositiveButton("Prepare") { _, _ -> exportRecorderHistory() }.show()
             }
@@ -377,7 +377,14 @@ class MainActivity : Activity() {
         lines += "Thermal / hwmon attributes discovered: " + thermal.size
         lines += "Android thermal status: " + (nodes["@android_thermal_status"] ?: "not available from PowerManager on this Android build")
         lines += "Raw kernel attributes captured: " + (nodes["@field_count"] ?: nodes.size.toString())
-        if (nodes["@field_limit_reached"] == "true") lines += "WARNING: bounded kernel scan reached its configured field cap of " + (nodes["@field_limit"] ?: "unknown") + "; later paths were not scanned."
+        if (nodes["@field_limit_reached"] == "true") lines += "WARNING: bounded kernel scan reached its configured field cap of " + (nodes["@field_limit"] ?: "unknown") + "."
+        if (nodes["@scan_truncated"] == "true") lines += "WARNING: one or more inventory roots were truncated or not scanned. Missing fields do not establish lack of support."
+        nodes["@scan_work_ms"]?.let { work ->
+            lines += "Inventory scan: " + work + " ms elapsed • cooperative budget " + (nodes["@scan_time_budget_ms"] ?: "unknown") + " ms"
+        }
+        nodes.filterKeys { it.endsWith("/@scan") }.toSortedMap().forEach { (key,value) ->
+            lines += "  " + key + " = " + value
+        }
         val denied = nodes.filterValues { it == "READ_DENIED" || it == "LIST_DENIED" || it.startsWith("ERROR:") }
         lines += "Permission / read errors: " + denied.size
         denied.entries.take(20).forEach { lines += "  " + it.key + " = " + it.value }

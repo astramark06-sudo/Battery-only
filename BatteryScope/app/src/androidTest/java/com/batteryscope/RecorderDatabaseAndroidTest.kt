@@ -136,6 +136,36 @@ class RecorderDatabaseAndroidTest {
         } finally { file.delete() }
     }
 
+    @Test fun csvRoundTripPreservesRecordSequenceAcrossWallClockRollback() = database { source ->
+        sample(source,1000,100,70)
+        sample(source,900,200,69)
+        sample(source,1000,300,68)
+        source.insertEvent(1100,"TEST","first")
+        source.insertEvent(800,"TEST","second")
+        val output = StringWriter()
+        assertEquals(5L,source.exportCsv(output))
+        val file = File.createTempFile("csv-sequence",".csv",context.cacheDir)
+        try {
+            file.writeText(output.toString())
+            database { target ->
+                sample(target,5000,400,67)
+                assertEquals(HistoryBackup.Counts(3,2),target.restoreLegacyCsv(file))
+                val sampleTimes = mutableListOf<Long>()
+                val elapsedTimes = mutableListOf<Long>()
+                target.readableDatabase.rawQuery("SELECT timestamp_ms,elapsed_realtime_ms FROM samples ORDER BY id",null).use {
+                    while(it.moveToNext()) { sampleTimes.add(it.getLong(0)); elapsedTimes.add(it.getLong(1)) }
+                }
+                assertEquals(listOf(1000L,900L,1000L,5000L),sampleTimes)
+                assertEquals(listOf(100L,200L,300L,400L),elapsedTimes)
+                val eventTimes = mutableListOf<Long>()
+                target.readableDatabase.rawQuery("SELECT timestamp_ms FROM events ORDER BY id",null).use {
+                    while(it.moveToNext()) eventTimes.add(it.getLong(0))
+                }
+                assertEquals(listOf(1100L,800L),eventTimes)
+            }
+        } finally { file.delete() }
+    }
+
     @Test fun reportExcludesFutureRowsButPreservesRawHistory() = database { db ->
         val now = 2_000_000_000_000L
         sample(db, now - 30_000L, 100_000L, 52)

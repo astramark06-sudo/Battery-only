@@ -1554,28 +1554,26 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         var count = 0L
         val db = readableDatabase
         val snap = snapshot(db)
-        db.rawQuery("SELECT * FROM samples WHERE id BETWEEN ? AND ? ORDER BY timestamp_ms,id", arrayOf(snap.samples.minId.toString(),snap.samples.maxId.toString())).use { samples ->
-            db.rawQuery("SELECT timestamp_ms,event_type,details FROM events WHERE id BETWEEN ? AND ? ORDER BY timestamp_ms,id", arrayOf(snap.events.minId.toString(),snap.events.maxId.toString())).use { events ->
-                val timestampColumn = samples.getColumnIndexOrThrow("timestamp_ms")
-                var hasSample = samples.moveToFirst()
-                var hasEvent = events.moveToFirst()
-                while (hasSample || hasEvent) {
-                    val useSample = hasSample && (!hasEvent || samples.getLong(timestampColumn) <= events.getLong(0))
-                    if (useSample) {
-                        val row = RecorderCsv.sampleRow(
-                            samples.getLong(timestampColumn).toString(),
-                            value(samples, "elapsed_realtime_ms"),
-                            RecorderCsv.sampleFields.map { value(samples, it) }
-                        )
-                        writer.write(RecorderCsv.encodeRow(row))
-                        hasSample = samples.moveToNext()
-                    } else {
-                        val row = RecorderCsv.eventRow(events.getLong(0).toString(), events.getString(1), events.getString(2) ?: "")
-                        writer.write(RecorderCsv.encodeRow(row))
-                        hasEvent = events.moveToNext()
-                    }
-                    count++
-                }
+        // Wall time may jump backwards. Preserve each table's original record
+        // sequence (including duplicate timestamps) so CSV restore does not
+        // invent a different battery adjacency. The schema is still 28 columns.
+        db.rawQuery("SELECT * FROM samples WHERE id BETWEEN ? AND ? ORDER BY id",
+            arrayOf(snap.samples.minId.toString(),snap.samples.maxId.toString())).use { samples ->
+            while (samples.moveToNext()) {
+                writer.write(RecorderCsv.encodeRow(RecorderCsv.sampleRow(
+                    value(samples,"timestamp_ms"), value(samples,"elapsed_realtime_ms"),
+                    RecorderCsv.sampleFields.map { value(samples,it) }
+                )))
+                count++
+            }
+        }
+        db.rawQuery("SELECT timestamp_ms,event_type,details FROM events WHERE id BETWEEN ? AND ? ORDER BY id",
+            arrayOf(snap.events.minId.toString(),snap.events.maxId.toString())).use { events ->
+            while (events.moveToNext()) {
+                writer.write(RecorderCsv.encodeRow(RecorderCsv.eventRow(
+                    events.getLong(0).toString(),events.getString(1),events.getString(2) ?: ""
+                )))
+                count++
             }
         }
         check(count == snap.samples.count + snap.events.count) { "CSV snapshot row-count mismatch" }

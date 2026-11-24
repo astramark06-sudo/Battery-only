@@ -1,5 +1,17 @@
 # BatteryScope project status and engineering handoff
 
+## Current development status — 2026-11-25
+
+Active work is in [draft PR #3](https://github.com/astramark06-sudo/Battery-only/pull/3), branch `fix/apk-update-preflight`; main is the previous baseline, not the current remediation source. See [DEVELOPMENT_HANDOFF.md](DEVELOPMENT_HANDOFF.md) for the latest checkpoint and [PR CI](https://github.com/astramark06-sudo/Battery-only/pull/3/checks) for exact verification outcomes. Package com.batteryscope, version 1.15 (16), database v5. No release or data migration on the physical RMX2161 has been authorized as verified.
+
+Recent source changes include WAL and one-pass rolling history, bounded recent-session processing, verified export staging and recovery, strict boot/permission-aware rates, raw broadcast metadata, six resource-history windows, expanded public API inventory (normal ACCESS_NETWORK_STATE; no INTERNET), release metadata checks and lint, parsed JSON resource selection, cooperative kernel inventory limits, and sequence-preserving CSV. These are source changes, not a claim that every latest test has passed.
+
+The earlier cumulative run 45481677171 failed lint and two emulator assertions; corrections were committed in 11a7ebe and require fresh cumulative CI. Remaining gaps: durable Android system-history imports, backup provenance/overlap policy, scalable persistent aggregation, lifecycle/provider tests, device benchmarks, signing continuity, and real handset validation. Do not install an ephemeral debug APK over an existing installation or delete history.
+
+## Historical status and evidence
+
+The sections below describe earlier versions and branch checkpoints; dates, schema descriptions, CI counts, permissions and feature descriptions are historical, not current release claims.
+
 > **Repository migration — 2026-11-24:** Current development is in [Battery-only/main](https://github.com/astramark06-sudo/Battery-only/tree/main). The former `batteryscope` branch in `ocr` is historical, not the active development branch. The [standalone Android build](https://github.com/astramark06-sudo/Battery-only/actions/runs/45348612049) passed for commit `45d65c6b624515bfd269e1eaa6380cb4611e050a` (artifact ID `14899402289`). Earlier source commits, checksums and signer records below remain historical evidence; no new device or signing-compatibility verification is claimed.
 
 Last source update: 2026-11-23  

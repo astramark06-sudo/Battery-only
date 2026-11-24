@@ -1,5 +1,11 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — CSV record sequence and scan diagnostics (R32 / R39 partial)
+
+- CSV export retains original per-table ID order (samples first, events second), including duplicates and wall-clock rollback, instead of timestamp sorting. Same 28-column schema and existing earlier-only import; previously sorted CSVs cannot recover their lost sequence. Portable .bsh remains preferred for lossless typed history. New Android test exports, imports before existing history and verifies exact sample wall/elapsed and event order.
+- Dashboard exposes new per-root scan budget and truncation metadata. Project status now explicitly distinguishes active draft PR, current source and historical evidence. Documentation and export warning updated. No schema, version, signing, permission or production history changes.
+- Exact afcf560 KernelInventory.kt blob 2cbe19f64398ddfc5db228f2f7ddf72479bdc5fa compiled locally; 21,009 assertions passed using a 200-entry disposable directory, limits 0–201, bounded read sizes 0–300, visitor exception and stream reopening. Not a physical sysfs or Android deadline test. Cumulative CI remains required.
+
 ## 2026-11-25 — Kernel scan enumeration and cooperative budget (R26 partial)
 
 - Stream directory entries with DirectoryStream instead of unbounded listFiles/sort; stop before fetching the next entry when budgets expire. Preserve read-only allowlist, canonical sysfs restriction and cycle checks. Each root gets a share of remaining field/entry budget (power supply weighted 3), unused capacity flows to later roots. Add cooperative two-second total work budget and explicit per-root scan/truncation/elapsed metadata. No hard timeout guarantee for a blocking kernel syscall. Remove buffered prefetch from bounded attribute reads.
