@@ -130,12 +130,35 @@ jobs:
           sdkmanager "emulator" "system-images;android-32;google_apis;x86_64"
           test -e /dev/kvm
           sudo chmod a+rw /dev/kvm
-          echo no | avdmanager create avd --force --name batteryscope-ci --package "system-images;android-32;google_apis;x86_64"
+          # Use one explicit AVD location for the Java tools and native emulator.
+          export ANDROID_USER_HOME="$RUNNER_TEMP/batteryscope-android"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          printf 'ANDROID_USER_HOME=%s\nANDROID_AVD_HOME=%s\n' "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
+          echo no | avdmanager create avd --force --name batteryscope-ci --package "system-images;android-32;google_apis;x86_64" --path "$ANDROID_AVD_HOME/batteryscope-ci.avd"
+          test -f "$ANDROID_AVD_HOME/batteryscope-ci.ini"
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fx batteryscope-ci
       - name: Boot isolated test emulator
         run: |
-          "$ANDROID_HOME/emulator/emulator" -avd batteryscope-ci -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -accel on > "$RUNNER_TEMP/batteryscope-emulator.log" 2>&1 &
-          timeout 420 adb wait-for-device
-          timeout 420 bash -c 'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 3; done'
+          LOG="$RUNNER_TEMP/batteryscope-emulator.log"
+          EMULATOR="$ANDROID_HOME/emulator/emulator"
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then adb devices -l || true; tail -n 150 "$LOG" || true; fi' EXIT
+          "$EMULATOR" -accel-check
+          "$EMULATOR" -avd batteryscope-ci -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -accel on > "$LOG" 2>&1 &
+          EMULATOR_PID=$!
+          adb start-server
+          deadline=$((SECONDS + 600))
+          until [ "$(timeout 10 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)" = "1" ]; do
+            if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
+              echo "Emulator exited before Android finished booting" >&2
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "Android emulator boot timed out" >&2
+              exit 1
+            fi
+            sleep 3
+          done
           adb shell input keyevent 82
       - name: Run Android instrumentation tests
         working-directory: BatteryScope
