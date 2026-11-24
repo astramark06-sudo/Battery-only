@@ -48,7 +48,7 @@ class RecorderSchemaTest {
     }
 
     @Test fun freshSchemaSupportsRepeatedWallClockTimestamps() = database { db ->
-        RecorderSchema.create(db::exec)
+        RecorderSchema.create({ sql -> db.exec(sql) })
         repeat(2) { i ->
             db.exec("INSERT INTO samples(timestamp_ms,elapsed_realtime_ms,battery_status,plug_type,screen_on,usage_access) VALUES(1000,${100+i},'DISCHARGING','NONE',0,0)")
         }
@@ -60,7 +60,7 @@ class RecorderSchemaTest {
         for (version in 1..4) database { db ->
             db.legacy(version)
             db.autoCommit = false
-            RecorderSchema.upgrade(version, 5, db::exec, db::number)
+            RecorderSchema.upgrade(version, 5, { sql -> db.exec(sql) }, { sql -> db.number(sql) })
             db.commit()
             assertEquals(1L, db.number("SELECT COUNT(*) FROM samples"))
             assertEquals(1L, db.number("SELECT COUNT(*) FROM events WHERE details='existing event'"))
@@ -82,7 +82,7 @@ class RecorderSchemaTest {
         db.legacy(4)
         db.autoCommit = false
         try {
-            RecorderSchema.upgrade(4,5,db::exec) { sql ->
+            RecorderSchema.upgrade(4,5,{ sql -> db.exec(sql) }) { sql ->
                 if (sql.contains("samples_v5")) 0L else db.number(sql)
             }
             fail("Expected row-count mismatch")
