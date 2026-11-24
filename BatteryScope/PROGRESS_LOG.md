@@ -1,5 +1,9 @@
 # BatteryScope persistent progress log
 
+## 2026-11-24 — Combined history and gap scans
+
+Combined continuity and rate summaries in the same cursor pass per window; six historical windows now use six rather than twelve summary/gap scans, with unchanged >90-second gap threshold. Recent-session and capacity scans are separate. Added gap arithmetic regression tests; actual handset throughput and retained-history memory remain to be benchmarked. CI pending.
+
 ## 2026-11-24 — Legacy CSV history import
 
 Added original, fully quoted 28-column CSV import for earlier exports from the same handset. Parser bounds fields/rows, validates schema and typed values, rejects malformed data, and validates before starting the transactional non-overlap restore. CSV is neither checksummed nor lossless; text transformations and historical null/empty ambiguity cannot be reversed. Do not edit or resave CSV in a spreadsheet before import. Portable backup cursor ownership hardened on failures. CI pending.

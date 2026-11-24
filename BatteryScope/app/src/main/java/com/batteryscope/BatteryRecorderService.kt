@@ -733,7 +733,7 @@ class RecorderDatabase(context: Context) :
                 val stats = summariseSince(from)
                 appendLine()
                 appendLine("=== " + label + " • " + stats.count + " samples ===")
-                appendLine("Sampling continuity: " + gapReportSince(from))
+                appendLine("Sampling continuity: " + stats.gapReport)
                 appendLine("Charging: " + stats.chargeHours + " h • +" + stats.chargedPct + " percentage points • " + stats.chargeRate + " %/h")
                 appendLine("Discharging: " + stats.dischargeHours + " h • -" + stats.dischargedPct + " percentage points • " + stats.dischargeRate + " %/h")
                 appendLine("Charge-counter gain/loss: +" + stats.chargeGainMah + " / -" + stats.chargeLossMah + " mAh (Android estimate)")
@@ -821,7 +821,8 @@ class RecorderDatabase(context: Context) :
         val pluggedDrainOnHours: String, val pluggedDrainOnPct: String, val pluggedDrainOnRate: String,
         val pluggedDrainOffHours: String, val pluggedDrainOffPct: String, val pluggedDrainOffRate: String,
         val screenOn: Int, val screenOff: Int, val apps: List<AppMetric>,
-        val chargeCounterRateMa: String, val dischargeCounterRateMa: String
+        val chargeCounterRateMa: String, val dischargeCounterRateMa: String,
+        val gapReport: String
     )
 
     private fun readWindow(from: Long): List<Row> {
@@ -838,49 +839,6 @@ class RecorderDatabase(context: Context) :
             )
         }
         return rows
-    }
-
-    // BatteryManager status is primary; plug state can lag a connection transition.
-    private fun gapReportSince(from: Long): String {
-        var gaps = 0
-        var missingMs = 0L
-        var longestMs = 0L
-        var intervals = 0L
-        var intervalTotal = 0L
-        var previous: Row? = null
-        readableDatabase.rawQuery(
-            "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count FROM samples WHERE timestamp_ms>=? ORDER BY id",
-            arrayOf(from.toString())
-        ).use { cursor ->
-            while (cursor.moveToNext()) {
-                val current = Row(
-                    cursor.getLong(0), cursor.getLong(1),
-                    if (cursor.isNull(2)) null else cursor.getInt(2),
-                    cursor.getString(3) ?: "UNKNOWN", cursor.getString(4) ?: "NONE",
-                    if (cursor.isNull(5)) null else cursor.getLong(5),
-                    cursor.getInt(6) == 1, cursor.getString(7) ?: "",
-                    if (cursor.isNull(8)) null else cursor.getInt(8)
-                )
-                val before = previous
-                if (before != null) {
-                    val dt = sampleIntervalMs(before, current)
-                    if (dt > 0L) {
-                        intervals++
-                        intervalTotal += dt
-                        if (dt > BatteryRecorderService.SAMPLE_INTERVAL_MS * 3) {
-                            gaps++
-                            missingMs += (dt - BatteryRecorderService.SAMPLE_INTERVAL_MS).coerceAtLeast(0L)
-                            if (dt > longestMs) longestMs = dt
-                        }
-                    }
-                }
-                previous = current
-            }
-        }
-        val average = if (intervals > 0L) (intervalTotal / intervals).toString() + " ms" else "n/a"
-        return gaps.toString() + " gaps >90s • uncovered estimate " + durationText(missingMs) +
-            " • longest gap " + durationText(longestMs) + " • average interval " + average +
-            " (uses monotonic time when samples are within the same boot; wall time across reboot; exact gap cause is unknown)"
     }
 
     private fun sampleIntervalMs(before: Row, after: Row): Long =
@@ -926,6 +884,7 @@ class RecorderDatabase(context: Context) :
         var screenOn = 0
         var screenOff = 0
         var previous: Row? = null
+        val gap = SamplingGapAccumulator(BatteryRecorderService.SAMPLE_INTERVAL_MS)
         readableDatabase.rawQuery(
             """SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count
                FROM samples WHERE timestamp_ms>=? ORDER BY id""".trimIndent(),
@@ -957,6 +916,7 @@ class RecorderDatabase(context: Context) :
                 val before = previous
                 if (before != null) {
                     val dt = sampleIntervalMs(before, after)
+                    gap.accept(dt)
                     if (isRateInterval(before, after, dt)) {
                         val sameApp = RecorderTimeMath.sameForegroundApp(before.screen, after.screen, before.app, after.app)
                         if (sameApp) appTime[after.app] = (appTime[after.app] ?: 0L) + dt
@@ -1024,7 +984,11 @@ class RecorderDatabase(context: Context) :
                 )
             },
             charge.counter.rateMa()?.let { fmt(it) } ?: "n/a",
-            drain.counter.rateMa()?.let { fmt(it) } ?: "n/a"
+            drain.counter.rateMa()?.let { fmt(it) } ?: "n/a",
+            gap.gaps.toString() + " gaps >90s • uncovered estimate " + durationText(gap.missingMs) +
+                " • longest gap " + durationText(gap.longestMs) + " • average interval " +
+                (gap.averageMs?.let { "$it ms" } ?: "n/a") +
+                " (uses monotonic time when samples are within the same boot; wall time across reboot; exact gap cause is unknown)"
         )
     }
 
