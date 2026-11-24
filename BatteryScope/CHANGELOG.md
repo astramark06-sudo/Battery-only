@@ -1,5 +1,13 @@
 # BatteryScope changelog
 
+## 2026-11-25 — Rotation-independent history work and verified export copies (R23/R24/R17 partial)
+
+- Prior bounded-session checkpoint `3ad0f4a65093bde77d1e6fd6b493d097a427e20c` passed [Android build/JVM and emulator CI](https://github.com/astramark06-sudo/Battery-only/actions/runs/45477206169) and signing-policy tests.
+- A single application-scoped history worker now owns export preparation, destination copy/read-back, discard and import. It retains operation state across Activity recreation without holding an Activity reference. A successful restore increments a process-local revision so the visible Activity refreshes history. The document picker retains its selected filename/request in saved instance state.
+- Export is deliberately two-step: prepare a private completed file, then explicitly choose Save / retry prepared export. Completed files are published only after flush/sync and same-directory rename from .part, rediscovered after process restart, retained on cancellation, copy failure or unverifiable destination. Destination is opened for truncating write and reopened to compare byte count and SHA-256 before removal of the prepared copy. Explicit discard affects only a selected staging copy, never raw history. CSV now has a privacy disclosure as well as backup.
+- Added three JVM tests for streaming SHA-256/copy, truncation/corruption, non-progressing streams and safe filenames. New CI pending. R23/R24 partial: actual Activity recreation/document-provider tests, process termination during write/restore, leftover .part cleanup and crash-durable operation results remain unverified. Read-back may be unavailable on some providers; copy is not reported verified in that case.
+- No schema, permissions, application ID, signing, version or raw history changes. Earlier-only restore policy unchanged. Keep PR draft. Next: Android lifecycle/provider integration tests, export failure recovery and remaining measurement/provenance/telemetry findings.
+
 ## 2026-11-25 — Bounded recent-session processing and unavailable-result labels (R13/R31)
 
 - Recent 30-day session query now streams rows directly into independent charging/discharging collectors, each retaining at most eight completed aggregate summaries and one active run. A run stores endpoints, valid elapsed time, screen/counter totals and first threshold crossings, not its entire sample list. The detailed latest-session and compact recent-session reports use the same collector. Original ID order, rate interval, FULL terminal endpoint and no catch-up/interpolation rules are preserved.
