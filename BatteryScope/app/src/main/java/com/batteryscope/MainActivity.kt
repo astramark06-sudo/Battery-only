@@ -91,7 +91,7 @@ class MainActivity : Activity() {
         telemetryThread = HandlerThread("BatteryScopeLiveTelemetry").apply { start() }
         telemetryHandler = android.os.Handler(telemetryThread.looper)
         buildUi()
-        pendingExportName = savedInstanceState?.getString(PENDING_EXPORT_NAME)?.takeIf { HistoryTransfer.isReadyName(it) }
+        pendingExportName = savedInstanceState?.getString(PENDING_EXPORT_NAME)?.takeIf { HistoryTransfer.isSaveName(it) }
         pendingImportRequest = savedInstanceState?.getInt(PENDING_IMPORT_REQUEST, 0) ?: 0
         observedRestoreRevision = HistoryOperations.state.restoreRevision
         HistoryOperations.discover(applicationContext)
@@ -766,7 +766,8 @@ class MainActivity : Activity() {
 
     private fun updateHistoryOperations() {
         val state = HistoryOperations.state
-        historyOperationText.text = state.message + "\nPrepared private exports: " + state.ready.size
+        historyOperationText.text = state.message + "\nPrepared private exports: " + state.ready.size +
+            " • older unverified copies: " + state.legacy.size + " • interrupted files: " + state.interrupted.size
         if (state.restoreRevision != observedRestoreRevision) {
             observedRestoreRevision = state.restoreRevision
             refreshHistoryDisplay(true)
@@ -789,15 +790,22 @@ class MainActivity : Activity() {
 
     private fun choosePreparedExport(discard: Boolean) {
         if (historyBusy()) return
-        val names = HistoryOperations.state.ready
+        val state = HistoryOperations.state
+        val names = state.ready + state.legacy + if (discard) state.interrupted else emptyList()
         if (names.isEmpty()) {
-            statusText.text = "No prepared exports. Prepare a CSV or backup first."
+            statusText.text = "No matching staging files. Prepare a CSV or backup first."
             HistoryOperations.discover(applicationContext, force = true)
             return
         }
         AlertDialog.Builder(this)
             .setTitle(if (discard) "Discard a private prepared copy" else "Choose a prepared export")
-            .setItems(names.toTypedArray()) { _, index ->
+            .setItems(names.map { name ->
+                when (HistoryTransfer.classify(name)) {
+                    HistoryTransfer.Stage.LEGACY_UNVERIFIED -> "Older / completeness unknown: " + name
+                    HistoryTransfer.Stage.INTERRUPTED -> "Interrupted / incomplete: " + name
+                    else -> name
+                }
+            }.toTypedArray()) { _, index ->
                 val name = names[index]
                 if (discard) {
                     AlertDialog.Builder(this)
@@ -808,6 +816,12 @@ class MainActivity : Activity() {
                             if (!historyBusy()) HistoryOperations.discard(applicationContext, name)
                             updateHistoryOperations()
                         }.show()
+                } else if (HistoryTransfer.classify(name) == HistoryTransfer.Stage.LEGACY_UNVERIFIED) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Recover older staging copy?")
+                        .setMessage("An older app wrote this file directly, so it may be incomplete. Copy verification cannot establish its original record count. Prefer preparing a new export from local history. The older private copy will be retained.")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Copy anyway") { _, _ -> launchHistoryExport(name) }.show()
                 } else launchHistoryExport(name)
             }
             .setNegativeButton("Cancel", null).show()
@@ -816,7 +830,8 @@ class MainActivity : Activity() {
     @Suppress("DEPRECATION")
     private fun launchHistoryExport(name: String) {
         if (historyBusy()) return
-        if (!HistoryTransfer.isReadyName(name) || name !in HistoryOperations.state.ready) {
+        val state = HistoryOperations.state
+        if (!HistoryTransfer.isSaveName(name) || name !in (state.ready + state.legacy)) {
             statusText.text = "Prepared export unavailable. Refresh the prepared-file list."
             HistoryOperations.discover(applicationContext, force = true)
             return
@@ -856,7 +871,7 @@ class MainActivity : Activity() {
             statusText.text = "Export cancelled. Prepared copy retained for retry."
             return
         }
-        if (name == null || !HistoryTransfer.isReadyName(name)) {
+        if (name == null || !HistoryTransfer.isSaveName(name)) {
             statusText.text = "Export selection could not be recovered. No copy attempted; choose a prepared file again."
             return
         }

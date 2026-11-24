@@ -1,5 +1,6 @@
 package com.batteryscope
 
+import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
@@ -8,8 +9,40 @@ import java.security.MessageDigest
 internal object HistoryTransfer {
     data class Fingerprint(val bytes: Long, val sha256: String)
 
-    fun isReadyName(name: String): Boolean =
-        name.matches(Regex("BatteryScope_(History_[0-9a-f_]+[.]csv|Backup_[0-9a-f_]+[.]bsh)"))
+    enum class Stage { READY, LEGACY_UNVERIFIED, INTERRUPTED }
+    data class StagedFile(val name: String, val stage: Stage)
+    private val published = Regex("BatteryScope_(History_[0-9]{1,19}_[0-9a-f]{32}[.]csv|Backup_[0-9]{1,19}_[0-9a-f]{32}[.]bsh)")
+    private val legacy = Regex("BatteryScope_(History_[0-9]{8}_[0-9]{6}_[0-9]{3}[.]csv|Backup_[0-9]{8}_[0-9]{6}_[0-9]{3}[.]bsh)")
+
+    fun classify(name: String): Stage? = when {
+        published.matches(name) -> Stage.READY
+        legacy.matches(name) -> Stage.LEGACY_UNVERIFIED
+        name.endsWith(".part") && published.matches(name.removeSuffix(".part")) -> Stage.INTERRUPTED
+        else -> null
+    }
+
+    fun isReadyName(name: String): Boolean = classify(name) == Stage.READY
+    fun isSaveName(name: String): Boolean = classify(name) in setOf(Stage.READY, Stage.LEGACY_UNVERIFIED)
+
+    /** Exact app-generated names, regular private files, never follow a redirected path. */
+    fun resolve(directory: File, name: String): File {
+        require(classify(name) != null) { "Unrecognized staging filename" }
+        val parent = directory.canonicalFile
+        val file = File(parent, name)
+        require(file.isFile && file.canonicalFile == file) { "Staged file missing or redirected" }
+        return file
+    }
+
+    fun scan(directory: File): List<StagedFile> {
+        if (!directory.exists()) return emptyList()
+        check(directory.isDirectory) { "Private export directory is not a directory" }
+        val entries = directory.listFiles() ?: error("Cannot list private export directory")
+        return entries.sortedByDescending { it.lastModified() }.mapNotNull { file ->
+            val stage = classify(file.name) ?: return@mapNotNull null
+            if (runCatching { resolve(directory, file.name) }.isFailure) null
+            else StagedFile(file.name, stage)
+        }
+    }
 
     fun fingerprint(input: InputStream, output: OutputStream? = null): Fingerprint {
         val digest = MessageDigest.getInstance("SHA-256")

@@ -7,11 +7,15 @@ import java.io.FileOutputStream
 import java.util.UUID
 
 /** One process-wide history worker, independent of Activity recreation. No Activity references. */
-internal object HistoryOperations {
+internal class HistoryOperationCoordinator(
+    private val directory: (Context) -> File = { File(it.filesDir, "exports") }
+) {
     data class State(
         val busy: Boolean = false,
         val message: String = "No history operation in progress.",
         val ready: List<String> = emptyList(),
+        val legacy: List<String> = emptyList(),
+        val interrupted: List<String> = emptyList(),
         val restoreRevision: Long = 0L
     )
     private data class Result(val message: String, val restored: Boolean = false)
@@ -19,10 +23,7 @@ internal object HistoryOperations {
         private set
     private var discovered = false
 
-    private fun directory(app: Context) = File(app.filesDir, "exports")
-    private fun scan(app: Context): List<String> =
-        directory(app).listFiles()?.filter { it.isFile && HistoryTransfer.isReadyName(it.name) }
-            ?.sortedByDescending { it.lastModified() }?.map { it.name } ?: emptyList()
+    private fun scan(app: Context) = HistoryTransfer.scan(directory(app))
 
     @Synchronized private fun start(app: Context, message: String, work: (Context) -> Result): Boolean {
         if (state.busy) return false
@@ -36,10 +37,19 @@ internal object HistoryOperations {
                 } catch (e: Exception) {
                     result = Result("History operation failed: " + e.javaClass.simpleName + ": " + (e.message ?: "unknown"))
                 } finally {
-                    val ready = try { scan(context) } catch (_: Exception) { state.ready }
+                    val staged = runCatching { scan(context) }.getOrNull()
                     synchronized(this) {
-                        state = State(false, result.message, ready, state.restoreRevision + if (result.restored) 1L else 0L)
-                        discovered = true
+                        fun names(stage: HistoryTransfer.Stage, fallback: List<String>) =
+                            staged?.filter { it.stage == stage }?.map { it.name } ?: fallback
+                        state = State(
+                            busy = false,
+                            message = result.message + if (staged == null) " Private staging list could not be refreshed." else "",
+                            ready = names(HistoryTransfer.Stage.READY, state.ready),
+                            legacy = names(HistoryTransfer.Stage.LEGACY_UNVERIFIED, state.legacy),
+                            interrupted = names(HistoryTransfer.Stage.INTERRUPTED, state.interrupted),
+                            restoreRevision = state.restoreRevision + if (result.restored) 1L else 0L
+                        )
+                        discovered = staged != null
                     }
                 }
             }, "BatteryScopeHistoryOperation").start()
@@ -56,11 +66,6 @@ internal object HistoryOperations {
         return start(app, "Checking private prepared copies…") {
             Result(previousMessage)
         }
-    }
-
-    private fun readyFile(app: Context, name: String): File {
-        require(HistoryTransfer.isReadyName(name)) { "Invalid prepared-file name" }
-        return File(directory(app), name).also { require(it.isFile) { "Prepared copy is missing" } }
     }
 
     fun prepare(app: Context, backup: Boolean): Boolean = start(app, "Preparing private history export…") { context ->
@@ -92,7 +97,9 @@ internal object HistoryOperations {
     }
 
     fun save(app: Context, name: String, destination: Uri): Boolean = start(app, "Copying and verifying destination…") { context ->
-        val source = readyFile(context, name)
+        require(HistoryTransfer.isSaveName(name)) { "Interrupted or unknown files cannot be exported" }
+        val source = HistoryTransfer.resolve(directory(context), name)
+        val legacy = HistoryTransfer.classify(name) == HistoryTransfer.Stage.LEGACY_UNVERIFIED
         val resolver = context.contentResolver
         val expected = try {
             source.inputStream().use { input ->
@@ -109,13 +116,15 @@ internal object HistoryOperations {
             return@start Result("Copy closed, but read-back verification failed: " + e.javaClass.simpleName + ". Prepared copy retained; inspect the destination before relying on it.")
         }
         if (expected != actual) return@start Result("Destination size or SHA-256 differs. Prepared copy retained; do not rely on the destination.")
+        if (legacy) return@start Result("Older staging copy transferred byte-for-byte (" + expected.bytes +
+            " bytes; SHA-256 " + expected.sha256 + "). Original completeness is unknown; private copy retained.")
         val removed = source.delete()
         Result("Destination verified: " + expected.bytes + " bytes; SHA-256 " + expected.sha256 +
             if (removed) ". Prepared copy removed." else ". Verified, but private prepared copy remains.")
     }
 
     fun discard(app: Context, name: String): Boolean = start(app, "Discarding selected prepared copy…") { context ->
-        check(readyFile(context, name).delete()) { "Could not discard prepared copy" }
+        check(HistoryTransfer.resolve(directory(context), name).delete()) { "Could not discard selected staging copy" }
         Result("Prepared copy discarded. Local telemetry history unchanged.")
     }
 
@@ -136,3 +145,6 @@ internal object HistoryOperations {
         } finally { file.delete() }
     }
 }
+
+/** Production singleton; isolated instances are used only for disposable tests. */
+internal val HistoryOperations = HistoryOperationCoordinator()

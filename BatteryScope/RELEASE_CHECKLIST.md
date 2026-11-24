@@ -1,5 +1,12 @@
 # BatteryScope release checklist
 
+## 2026-11-25 — Explicit staging recovery and Android transfer regression (R24 follow-up)
+
+- Prior head `d85c12ad428b34c0e7039ee3385ba72ce23b7af4` passed [Android CI](https://github.com/astramark06-sudo/Battery-only/actions/runs/45478239043) and signing-policy CI. Latest changes distinguish exact atomically published UUID filenames, older directly-written copies of unknown completeness, and interrupted .part files. No staging files are automatically deleted by discovery.
+- Older copies require an explicit recovery warning, may be copied byte-for-byte but never claim complete history or auto-delete after copy. Interrupted files cannot be exported as completed backups; selected discard requires confirmation and affects only a recognized private staging file. Exact name and canonical-file checks prevent redirected or unrelated files being used.
+- The operation coordinator is instantiable with a private test directory while the production singleton remains process-wide. New JVM directory/filename tests and a disposable Android integration test use actual ContentResolver file streams for failed save, retry/truncation, read-back, legacy recovery, interrupted rejection and discard. This does not test external SAF cloud providers, actual Activity recreation or crash durability.
+- R24 remains partial until new CI and external provider tests. No history schema, signing, version, permissions or production history changes. PR stays draft.
+
 ## 2026-11-25 — Rotation-independent history work and verified export copies (R23/R24/R17 partial)
 
 - Prior bounded-session checkpoint `3ad0f4a65093bde77d1e6fd6b493d097a427e20c` passed [Android build/JVM and emulator CI](https://github.com/astramark06-sudo/Battery-only/actions/runs/45477206169) and signing-policy tests.
