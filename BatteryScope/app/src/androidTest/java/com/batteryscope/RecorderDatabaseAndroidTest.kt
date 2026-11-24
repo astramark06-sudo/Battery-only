@@ -147,7 +147,7 @@ class RecorderDatabaseAndroidTest {
         assertTrue(report.contains("=== ALL TIME • 2 samples ==="))
         assertTrue(report.contains("From last eligible recorded 51%"))
         assertFalse(report.contains("From last eligible recorded 99%"))
-        assertTrue(report.contains("Last sample: " + now))
+        assertTrue(report.contains("Last sample: " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z",java.util.Locale.US).format(java.util.Date(now))))
         assertEquals(3L, number(db.readableDatabase, "SELECT COUNT(*) FROM samples"))
     }
 
@@ -325,7 +325,7 @@ class RecorderDatabaseAndroidTest {
             val report = target.historySummary(now)
             val daily = report.substringAfter("=== DEVICE RESOURCE HISTORY (LAST 24 HOURS) ===").substringBefore("===")
             val weekly = report.substringAfter("=== DEVICE RESOURCE HISTORY (LAST 7 DAYS) ===").substringBefore("===")
-            assertTrue(daily.contains("Distinct resource snapshots: 1"))
+            assertTrue("Resource window output: " + daily, daily.contains("Distinct resource snapshots: 1"))
             assertTrue(daily.contains("valid snapshots 1/1"))
             assertTrue(weekly.contains("Distinct resource snapshots: 2"))
             assertEquals(1L,number(target.readableDatabase,"SELECT COUNT(*) FROM samples WHERE battery_voltage_mv=0 AND temperature_c<0"))

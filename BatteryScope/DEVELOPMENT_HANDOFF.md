@@ -1,5 +1,9 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Cumulative CI failure recovery
+
+- Run 45481677171 compiled and passed JVM tests but failed lint on the existing PACKAGE_USAGE_STATS declaration and two of 17 emulator tests. Verified downloaded instrumentation ZIP SHA-256 5e7fd1a64e01247b1989ac4f9849b9d47f66e3c31dea46f8f407ba768ef1cc0d; exact failing lines 150 and 328. Corrected the outdated epoch-time assertion. Resource filtering no longer assumes a particular JSON slash escaping; parse keys instead of SQL text matching. Gauge selection skips metadata-only rows and malformed JSON. Added narrow documented lint suppression on the special access declaration only; lint remains enabled. New cumulative CI required. Full JSON scan cost remains an open performance concern.
+
 ## 2026-11-25 — Explicit production metadata gate and Android lint (R36/R37 partial)
 
 - Offline signing preflight accepts optional --release-version-name: exact versionName, application metadata present, debuggable and INTERNET permission rejected, same-version override disallowed. Certificate/version continuity and immutable artifact hash remain mandatory; successful result is still identity match only, not approval.

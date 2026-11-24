@@ -724,15 +724,25 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             })
         }
         val latestHardwareJson = readableDatabase.rawQuery(
-            "SELECT power_supply_json FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND (instr(power_supply_json,'\"@inventory_policy\"')>0 OR instr(power_supply_json,'\"power_supply/')>0) ORDER BY id DESC LIMIT 1",
+            "SELECT power_supply_json FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND power_supply_json IS NOT NULL ORDER BY id DESC",
             windowArgs(0L, nowMs, range)
-        ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        ).use { cursor ->
+            var selected: JSONObject? = null
+            while (cursor.moveToNext()) {
+                val candidate = runCatching { JSONObject(cursor.getString(0)) }.getOrNull() ?: continue
+                if (candidate.has("@inventory_policy") || candidate.keys().asSequence().any { it.startsWith("power_supply/") }) {
+                    selected = candidate
+                    break
+                }
+            }
+            selected
+        }
         val kernelReport = buildString {
             appendLine("KERNEL FUEL-GAUGE CAPACITY / CYCLE REPORT")
             if (latestHardwareJson == null) {
                 appendLine("No hardware-tree sample recorded yet. Start the recorder and wait for its first 120-second hardware inventory.")
             } else {
-                val json = try { JSONObject(latestHardwareJson) } catch (_: Throwable) { JSONObject() }
+                val json = latestHardwareJson
                 val fields = json.keys().asSequence().associateWith { json.optString(it) }
                 val capturedWall = fields["@inventory_started_wall_ms"]?.toLongOrNull()
                 val captureAge = KernelPresentation.ageMs(capturedWall,nowMs)
@@ -792,7 +802,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             "LAST 365 DAYS" to (now-365*day), "ALL TIME" to 0L)
         val summaries = windows.map { ResourceHistory() }
         readableDatabase.rawQuery(
-            "SELECT boot_count,power_supply_json FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND instr(power_supply_json,'\"@device/captured_wall_ms\"')>0 ORDER BY id",
+            "SELECT boot_count,power_supply_json FROM samples WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? AND power_supply_json IS NOT NULL ORDER BY id",
             windowArgs(0L, now, range)
         ).use { cursor ->
             while (cursor.moveToNext()) {
