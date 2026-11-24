@@ -186,6 +186,9 @@ class MainActivity : Activity() {
         }
         content.addView(refreshButton, LinearLayout.LayoutParams(-1, -2))
 
+        content.addView(makeText(13f, Color.rgb(155, 170, 191), false).apply {
+            text = "Optional Usage Access permits local package-transition history and sampled app correlation. Imports look back up to 24 hours, with no activity names or content. Existing history stays local and access can be revoked in Android Settings."
+        })
         val usageButton = Button(this).apply {
             text = "Enable app usage tracking"
             setOnClickListener { openUsageAccessSettings() }

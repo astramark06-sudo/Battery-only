@@ -1,5 +1,12 @@
 # BatteryScope — device-wide telemetry architecture and capability audit
 
+## 2026-11-25 — Durable bounded UsageEvents import (R18 partial)
+
+- Prior checkpoint 5b38e8a93b021fd83708eaa4a3e2fc11d746e28d passed both Android jobs (build, JVM tests, APK inspection, lint, emulator) and signing policy: run 45483253766.
+- Import package-level foreground/background transition tuples on the existing slow inventory worker with optional Usage Access. At most 24-hour lookback, 15-minute forward chunks, two-minute settle/replay, four committed windows per pass; dense responses shrink rather than advance a partially read window. No activity names, screen content or network transfer. Dashboard disclosure describes optional access and local retention.
+- Store transitions and exclusive query checkpoint atomically in existing events table; retry deduplicates identical time/type/package tuples (cannot distinguish genuinely identical source events). Check current access before query/commit; stale concurrent checkpoint or revoked access rolls back the whole batch. Query coverage is not guaranteed, clock rollback/retention loss is labelled, no fake backfill. Existing live foreground estimates are separate.
+- Add JVM plan/boundary tests and disposable Android transaction, denial, duplicate, stale checkpoint and portable backup test. No schema/version/signing/permission changes. Android query behavior and app-usage aggregates, NetworkStatsManager, StorageStatsManager, and on-device performance remain open. New cumulative CI required.
+
 ## 2026-11-25 — Bounded public resource inventory (R19 partial)
 
 - Extend low-cadence resource snapshots with display state and current mode configuration, storage volume state/type (no labels/UUIDs/paths), sensor descriptors (max 64, explicit truncation), ABI list, time-zone offset and acquisition completion timestamps. Descriptors are not live sensor measurements. Display configurations are not panel power.

@@ -42,6 +42,31 @@ class RecorderDatabaseAndroidTest {
     private fun backup(db: RecorderDatabase): ByteArray =
         ByteArrayOutputStream().also { db.exportBackup(it) }.toByteArray()
 
+    @Test fun usageImportCheckpointIsAtomicDeduplicatedAndPortable() = database { source ->
+        val first = UsageHistory.Window(1000,2000,"INITIAL_BOUNDED_LOOKBACK")
+        val row = UsageHistory.Transition(1500,1,"com.example")
+        assertNull(source.usageCheckpoint())
+        assertEquals(1,source.commitUsageWindow(null,first,listOf(row,row)) { true })
+        assertEquals(2000L,source.usageCheckpoint()!!)
+        val second = UsageHistory.Window(1500,3000,"CONTINUATION")
+        val later = UsageHistory.Transition(2500,2,"com.example")
+        var checks = 0
+        assertTrue(runCatching {
+            source.commitUsageWindow(2000,second,listOf(later)) { ++checks == 1 }
+        }.isFailure)
+        assertEquals(2000L,source.usageCheckpoint()!!)
+        assertEquals(1L,number(source.readableDatabase,"SELECT COUNT(*) FROM events WHERE event_type='USAGE_EVENT_V1'"))
+        assertEquals(1,source.commitUsageWindow(2000,second,listOf(row,later)) { true })
+        assertTrue(runCatching { source.commitUsageWindow(2000,second,listOf(later)) { true } }.isFailure)
+        assertEquals(3000L,source.usageCheckpoint()!!)
+        val bytes = backup(source)
+        database { target ->
+            assertEquals(HistoryBackup.Counts(0,4),target.restoreBackup(ByteArrayInputStream(bytes)))
+            assertEquals(3000L,target.usageCheckpoint()!!)
+            assertEquals(2L,number(target.readableDatabase,"SELECT COUNT(*) FROM events WHERE event_type='USAGE_EVENT_V1'"))
+        }
+    }
+
     @Test fun portableBackupRoundTripPreservesTypedValuesAndDuplicateTimestamps() = database { source ->
         sample(source,1000,100)
         sample(source,1000,200)

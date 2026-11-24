@@ -47,6 +47,7 @@ class BatteryRecorderService : Service() {
     private lateinit var batteryManager: BatteryManager
     @Volatile private var batteryIntent: Intent? = null
     private var lastUsageQueryMs = 0L
+    private var lastUsageImportStatus: String? = null
     private var foregroundPackage: String? = null
     private var lastSampleState: String? = null
     private var lastSamplePlug: String? = null
@@ -537,6 +538,7 @@ class BatteryRecorderService : Service() {
                         inventoryHandoff.complete(fields, started, finished)
                         completed = true
                     }
+                    if (recorderRunning) importUsageHistory()
                 }
             } catch (e: Exception) {
                 if (recorderRunning) event("INVENTORY_ERROR", e.javaClass.simpleName)
@@ -547,6 +549,55 @@ class BatteryRecorderService : Service() {
             inventoryHandoff.failed()
             event("INVENTORY_ERROR", "WORKER_QUEUE_REJECTED")
         }
+    }
+
+    /** Slow historical queries run off the recorder worker. The existing live
+     * foreground correlation remains separate and does not prove occupancy. */
+    private fun importUsageHistory() {
+        fun status(value: String) {
+            if (value != lastUsageImportStatus && recorderRunning) {
+                lastUsageImportStatus = value
+                event("USAGE_IMPORT_STATUS",value)
+            }
+        }
+        if (!hasUsageAccess()) { status("UNAVAILABLE_PERMISSION"); return }
+        val database = RecorderDatabase(applicationContext)
+        try {
+            val manager = getSystemService(USAGE_STATS_SERVICE) as UsageStatsManager
+            // At most four bounded query/commit batches per inventory pass.
+            repeat(4) {
+                if (!recorderRunning || !hasUsageAccess()) return
+                val checkpoint = database.usageCheckpoint()
+                var window = UsageHistory.next(checkpoint,System.currentTimeMillis()) ?: run {
+                    status("CAUGHT_UP_TO_SETTLED_QUERY_BOUNDARY"); return
+                }
+                var attempts = 0
+                while (true) {
+                    check(++attempts <= 16) { "USAGE_QUERY_DENSITY_LIMIT" }
+                    val queried = manager.queryEvents(window.from,window.end)
+                        ?: throw IllegalStateException("USAGE_EVENTS_UNAVAILABLE")
+                    val rows = ArrayList<UsageHistory.Transition>()
+                    val event = UsageEvents.Event()
+                    var examined = 0
+                    var dense = false
+                    while (queried.hasNextEvent()) {
+                        if (++examined > UsageHistory.MAX_EVENTS) { dense = true; break }
+                        if (!queried.getNextEvent(event)) throw IllegalStateException("USAGE_EVENT_READ_FAILED")
+                        val row = UsageHistory.Transition(event.timeStamp,event.eventType,event.packageName ?: "")
+                        if (row.valid(window)) rows.add(row)
+                    }
+                    if (dense) {
+                        window = UsageHistory.shrink(window,checkpoint) ?: error("USAGE_QUERY_DENSITY_LIMIT")
+                        continue
+                    }
+                    database.commitUsageWindow(checkpoint,window,rows) { recorderRunning && hasUsageAccess() }
+                    status("IMPORTED_BOUNDED_QUERY_WINDOWS")
+                    break
+                }
+            }
+        } catch (e: Exception) {
+            status("QUERY_OR_COMMIT_FAILED:" + e.javaClass.simpleName + ":" + (e.message ?: "").take(100))
+        } finally { database.close() }
     }
 
     private fun insertSample(values: ContentValues) {
@@ -695,6 +746,45 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         writableDatabase.insertOrThrow("events", null, values)
     }
 
+
+    fun usageCheckpoint(): Long? = usageCheckpoint(readableDatabase)
+
+    private fun usageCheckpoint(database: SQLiteDatabase): Long? =
+        database.rawQuery("SELECT timestamp_ms FROM events WHERE event_type=? ORDER BY id DESC LIMIT 1",
+            arrayOf(UsageHistory.CHECKPOINT)).use { if (it.moveToFirst()) it.getLong(0) else null }
+
+    /** Atomically commit returned transitions and the exclusive query boundary.
+     * Identical (source timestamp, event type, package) tuples are collapsed.
+     * No raw history is deleted; failed/denied/contending imports roll back. */
+    internal fun commitUsageWindow(expected: Long?, window: UsageHistory.Window,
+        rows: List<UsageHistory.Transition>, allowed: () -> Boolean): Int {
+        require(window.from >= 0L && window.end > window.from)
+        require(rows.size <= UsageHistory.MAX_EVENTS && rows.all { it.valid(window) })
+        require(window.reason != "CONTINUATION" || expected != null && window.end > expected)
+        val database = writableDatabase
+        database.beginTransactionNonExclusive()
+        try {
+            check(allowed()) { "Usage Access unavailable" }
+            check(usageCheckpoint(database) == expected) { "Usage checkpoint changed" }
+            var inserted = 0
+            for (row in rows) {
+                val details = row.details()
+                val exists = database.rawQuery(
+                    "SELECT 1 FROM events WHERE timestamp_ms=? AND event_type=? AND details=? LIMIT 1",
+                    arrayOf(row.time.toString(),UsageHistory.EVENT,details)).use { it.moveToFirst() }
+                if (!exists) {
+                    insertEvent(row.time,UsageHistory.EVENT,details)
+                    inserted++
+                }
+            }
+            check(allowed()) { "Usage Access revoked before commit" }
+            insertEvent(window.end,UsageHistory.CHECKPOINT,
+                "from=" + window.from + ";end_exclusive=" + window.end + ";reason=" + window.reason +
+                    ";returned=" + rows.size + ";inserted=" + inserted + ";coverage_not_guaranteed")
+            database.setTransactionSuccessful()
+            return inserted
+        } finally { database.endTransaction() }
+    }
 
     fun capacityEstimateReport(nowMs: Long = System.currentTimeMillis()): String {
         val from = nowMs - 90L * 24L * 60L * 60L * 1000L
@@ -871,6 +961,10 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             val total = range.count
             appendLine("BATTERYSCOPE LOCAL HISTORY • RAW SAMPLES RETAINED UNTIL USER DELETES APP DATA")
             appendLine("Stored samples: " + total + " • target sample interval: 30 seconds")
+            val usageBoundary = usageCheckpoint()
+            appendLine("Package transition import query boundary: " +
+                (usageBoundary?.let { SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z",Locale.US).format(Date(it)) } ?: "not imported") +
+                " • local OS events only; retention and completeness not guaranteed")
             appendLine("Report excludes samples dated after its reference time; original records remain stored.")
             if (latestReading != null) appendLine("Last eligible battery level sample age: " + durationText(now - latestReading.second))
             appendLine("App and screen correlation uses matching sampled endpoints, not proof of continuous occupancy or a direct per-app electrical measurement. App correlation also requires Usage Access at both endpoints.")

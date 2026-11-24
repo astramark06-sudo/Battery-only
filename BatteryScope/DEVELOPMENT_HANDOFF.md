@@ -1,5 +1,12 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Durable bounded UsageEvents import (R18 partial)
+
+- Prior checkpoint 5b38e8a93b021fd83708eaa4a3e2fc11d746e28d passed both Android jobs (build, JVM tests, APK inspection, lint, emulator) and signing policy: run 45483253766.
+- Import package-level foreground/background transition tuples on the existing slow inventory worker with optional Usage Access. At most 24-hour lookback, 15-minute forward chunks, two-minute settle/replay, four committed windows per pass; dense responses shrink rather than advance a partially read window. No activity names, screen content or network transfer. Dashboard disclosure describes optional access and local retention.
+- Store transitions and exclusive query checkpoint atomically in existing events table; retry deduplicates identical time/type/package tuples (cannot distinguish genuinely identical source events). Check current access before query/commit; stale concurrent checkpoint or revoked access rolls back the whole batch. Query coverage is not guaranteed, clock rollback/retention loss is labelled, no fake backfill. Existing live foreground estimates are separate.
+- Add JVM plan/boundary tests and disposable Android transaction, denial, duplicate, stale checkpoint and portable backup test. No schema/version/signing/permission changes. Android query behavior and app-usage aggregates, NetworkStatsManager, StorageStatsManager, and on-device performance remain open. New cumulative CI required.
+
 ## 2026-11-25 — CSV record sequence and scan diagnostics (R32 / R39 partial)
 
 - CSV export retains original per-table ID order (samples first, events second), including duplicates and wall-clock rollback, instead of timestamp sorting. Same 28-column schema and existing earlier-only import; previously sorted CSVs cannot recover their lost sequence. Portable .bsh remains preferred for lossless typed history. New Android test exports, imports before existing history and verifies exact sample wall/elapsed and event order.
