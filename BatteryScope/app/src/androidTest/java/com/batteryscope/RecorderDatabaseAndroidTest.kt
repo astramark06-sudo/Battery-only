@@ -121,6 +121,18 @@ class RecorderDatabaseAndroidTest {
         assertEquals(3L, number(db.readableDatabase, "SELECT COUNT(*) FROM samples"))
     }
 
+    @Test fun continuityReportsEmptyAndStaleWindowsWithoutClaimingCoverage() = database { db ->
+        val now = 2_000_000_000_000L
+        assertTrue(db.historySummary(now).contains("no eligible samples; coverage unavailable"))
+        sample(db, now - 600_000L, 100_000L)
+        val stale = db.historySummary(now)
+        assertTrue(stale.contains("=== 24 HOURS • 1 samples ==="))
+        assertTrue(stale.contains("latest timestamp age 600s"))
+        assertTrue(stale.contains("leading unobserved edge 85800s"))
+        assertTrue(stale.contains("rate-eligible adjacent interval duration 0s"))
+        assertTrue(stale.contains("not a continuous coverage percentage"))
+    }
+
     @Test fun predictedThresholdIncludesElapsedSessionTime() = database { db ->
         val start = 2_000_000_000_000L
         for (i in 0..60) sample(db, start + i * 30_000L, 100_000L + i * 30_000L, 60 + i / 6, true)

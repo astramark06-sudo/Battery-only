@@ -701,9 +701,10 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             appendLine("Report excludes samples dated after its reference time; original records remain stored.")
             if (latestReading != null) appendLine("Last eligible battery level sample age: " + durationText(now - latestReading.second))
             appendLine("App foreground correlation is not a direct per-app electrical measurement.")
+            appendLine("Counter-derived averages may reflect coarse gauge steps (45,000 µAh observed on RMX2161), not instantaneous current. Implausible counter values and interval jumps are excluded from interval averages; raw readings are retained.")
             for ((label, duration) in windows) {
                 val from = if (duration == Long.MAX_VALUE) 0L else now - duration
-                val stats = summariseSince(from, now, range)
+                val stats = summariseSince(from, now, range, duration != Long.MAX_VALUE)
                 appendLine()
                 appendLine("=== " + label + " • " + stats.count + " samples ===")
                 appendLine("Sampling continuity: " + stats.gapReport)
@@ -711,6 +712,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 appendLine("Discharging: " + stats.dischargeHours + " h • -" + stats.dischargedPct + " percentage points • " + stats.dischargeRate + " %/h")
                 appendLine("Charge-counter gain/loss: +" + stats.chargeGainMah + " / -" + stats.chargeLossMah + " mAh (Android estimate)")
                 appendLine("Average battery-side charge rate from counter: " + stats.chargeCounterRateMa + " mA • discharge rate: " + stats.dischargeCounterRateMa + " mA (not USB input current)")
+                appendLine("Counter interval duration: " + stats.counterCoverage)
                 appendLine("Charging screen ON: " + stats.chargeOnHours + " h • +" + stats.chargeOnPct + "% • " + stats.chargeOnRate + " %/h")
                 appendLine("Charging screen OFF: " + stats.chargeOffHours + " h • +" + stats.chargeOffPct + "% • " + stats.chargeOffRate + " %/h")
                 appendLine("Charging rate comparison: screen ON " + stats.chargeOnRate + " %/h vs screen OFF " + stats.chargeOffRate + " %/h (historical averages)")
@@ -798,7 +800,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         val pluggedDrainOffHours: String, val pluggedDrainOffPct: String, val pluggedDrainOffRate: String,
         val screenOn: Int, val screenOff: Int, val apps: List<AppMetric>,
         val chargeCounterRateMa: String, val dischargeCounterRateMa: String,
-        val gapReport: String
+        val gapReport: String, val counterCoverage: String
     )
 
     private fun readWindow(from: Long, now: Long, range: SnapshotRange): List<Row> {
@@ -844,7 +846,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         bucket.counter.add(counter, duration)
     }
 
-    private fun summariseSince(from: Long, now: Long, range: SnapshotRange): Stats {
+    private fun summariseSince(from: Long, now: Long, range: SnapshotRange, finiteWindow: Boolean): Stats {
         val charge = Bucket(); val drain = Bucket()
         val chargeOn = Bucket(); val chargeOff = Bucket()
         val drainOn = Bucket(); val drainOff = Bucket()
@@ -860,6 +862,8 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         var screenOn = 0
         var screenOff = 0
         var previous: Row? = null
+        var earliestWall: Long? = null
+        var latestWall: Long? = null
         val gap = SamplingGapAccumulator(BatteryRecorderService.SAMPLE_INTERVAL_MS)
         readableDatabase.rawQuery(
             """SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count
@@ -888,17 +892,21 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                     if (cursor.isNull(iBootCount)) null else cursor.getInt(iBootCount)
                 )
                 count++
+                earliestWall = minOf(earliestWall ?: after.time, after.time)
+                latestWall = maxOf(latestWall ?: after.time, after.time)
                 if (after.screen) screenOn++ else screenOff++
                 val before = previous
                 if (before != null) {
                     val dt = sampleIntervalMs(before, after)
-                    gap.accept(dt)
-                    if (isRateInterval(before, after, dt)) {
+                    val eligible = isRateInterval(before, after, dt)
+                    val knownReboot = before.bootCount != null && after.bootCount != null && before.bootCount != after.bootCount
+                    gap.accept(dt, eligible, knownReboot)
+                    if (eligible) {
                         val sameApp = RecorderTimeMath.sameForegroundApp(before.screen, after.screen, before.app, after.app)
                         if (sameApp) appTime[after.app] = (appTime[after.app] ?: 0L) + dt
                         if (before.pct != null && after.pct != null) {
                             val delta = (after.pct - before.pct).toDouble()
-                            val counterDelta = CounterDelta.between(before.chargeCounter, after.chargeCounter)
+                            val counterDelta = CounterDelta.forInterval(before.chargeCounter, after.chargeCounter, dt)
                             val counterGain = CounterDelta.gain(counterDelta)
                             val counterLoss = CounterDelta.loss(counterDelta)
                             val bothPlugged = BatteryStateMath.connected(before.plug) && BatteryStateMath.connected(after.plug)
@@ -939,6 +947,11 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         fun fmt(value: Double) = String.format(Locale.US, "%.2f", value)
         fun duration(bucket: Bucket) = fmt(hours(bucket))
         fun rate(bucket: Bucket) = if (bucket.ms > 0L) fmt(bucket.pct / hours(bucket)) else "n/a"
+        val firstWall = earliestWall
+        val lastWall = latestWall
+        val edges = if (firstWall == null || lastWall == null) "no eligible samples; coverage unavailable"
+            else (if (finiteWindow) "leading unobserved edge " + ((firstWall - from).coerceAtLeast(0L) / 1000L) + "s • " else "") +
+                "latest timestamp age " + ((now - lastWall).coerceAtLeast(0L) / 1000L) + "s"
         return Stats(
             count, duration(charge), duration(drain), fmt(charge.pct), fmt(drain.pct), rate(charge), rate(drain),
             if (charge.counter.observedMs > 0L) fmt(charge.counter.deltaUah / 1000.0) else "n/a", if (drain.counter.observedMs > 0L) fmt(drain.counter.deltaUah / 1000.0) else "n/a",
@@ -961,10 +974,17 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             },
             charge.counter.rateMa()?.let { fmt(it) } ?: "n/a",
             drain.counter.rateMa()?.let { fmt(it) } ?: "n/a",
-            gap.gaps.toString() + " gaps >90s • uncovered estimate " + durationText(gap.missingMs) +
-                " • longest gap " + durationText(gap.longestMs) + " • average interval " +
+            gap.gaps.toString() + " gaps >90s • estimated uncovered time within long gaps " + durationText(gap.missingMs) +
+                " • longest long gap " + durationText(gap.longestMs) + " • average positive interval " +
                 (gap.averageMs?.let { "$it ms" } ?: "n/a") +
-                " (uses monotonic time when samples are within the same boot; wall time across reboot; exact gap cause is unknown)"
+                " • " + gap.intervalsAtLeastDoubleTarget + " intervals >=60s • " + gap.invalidRateIntervals +
+                " rate-ineligible intervals (" + gap.nonPositiveIntervals + " nonpositive; " + gap.knownReboots + " known reboots)" +
+                " • rate-eligible adjacent interval duration " + (gap.validIntervalMs / 1000L) + "s • " + edges +
+                " (not a continuous coverage percentage; edge times use wall timestamps; gap causes unknown)",
+            "charge " + (charge.counter.observedMs / 1000L) + "s accepted of " + (charge.ms / 1000L) +
+                "s classified • discharge " + (drain.counter.observedMs / 1000L) + "s accepted of " + (drain.ms / 1000L) +
+                "s classified • plugged decline " + (pluggedDrain.counter.observedMs / 1000L) + "s accepted of " +
+                (pluggedDrain.ms / 1000L) + "s classified"
         )
     }
 
@@ -1019,7 +1039,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 }
                 val counter = CounterDelta.between(first.chargeCounter, last.chargeCounter)?.div(1000.0)
                 val state = first.pct.toString() + "%→" + last.pct + "%"
-                val counterText = if (counter == null) "mAh n/a" else String.format(Locale.US, "%+.1f mAh", counter)
+                val counterText = if (counter == null) "endpoint mAh n/a" else String.format(Locale.US, "%+.1f mAh endpoint change (not interval-validated)", counter)
                 start + " • " + state + " • " + durationText(elapsed) +
                     " • " + String.format(Locale.US, "%+.2f pp/h", rate) +
                     " • screen ON " + durationText(onMs) +
@@ -1074,7 +1094,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         for ((before, after) in run.zipWithNext()) {
             val dt = sampleIntervalMs(before, after)
             if (!isRateInterval(before, after, dt)) continue
-            val deltaCounter = CounterDelta.between(before.chargeCounter, after.chargeCounter)
+            val deltaCounter = CounterDelta.forInterval(before.chargeCounter, after.chargeCounter, dt)
             sessionCounter.add(deltaCounter, dt)
             if (before.screen != after.screen) {
                 mixedMs += dt
@@ -1103,9 +1123,9 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         out.appendLine("Level: " + initial + "% → " + current + "% • elapsed: " + durationText(elapsed))
         out.appendLine("Average rate: " + String.format(Locale.US, "%.2f", rate) + " percentage points/hour")
         if (!directionMatches) out.appendLine("Battery percentage did not move in the expected direction; no session forecast is valid.")
-        if (counterDelta != null) out.appendLine("Charge-counter endpoint delta: " + String.format(Locale.US, "%+.1f mAh", counterDelta / 1000.0))
+        if (counterDelta != null) out.appendLine("Charge-counter endpoint delta (not interval-validated): " + String.format(Locale.US, "%+.1f mAh", counterDelta / 1000.0))
         val measuredRate = sessionCounter.rateMa()
-        if (measuredRate != null) out.appendLine("Charge-counter observed interval rate: " + String.format(Locale.US, "%+.1f mA", measuredRate) + " • measured interval time " + durationText(sessionCounter.observedMs) + " (Android estimate)")
+        if (measuredRate != null) out.appendLine("Charge-counter observed interval rate: " + String.format(Locale.US, "%+.1f mA", measuredRate) + " • accepted interval time " + (sessionCounter.observedMs / 1000L) + "s of " + (elapsed / 1000L) + "s (quantized Android estimate)")
         else out.appendLine("Charge-counter rate: unavailable")
         out.appendLine("Screen ON: " + durationText(onMs) + " • screen OFF: " + durationText(offMs) + " • mixed endpoints: " + durationText(mixedMs))
         val onRateText = onRate?.let { String.format(Locale.US, "%.2f pp/h", it) } ?: "n/a"

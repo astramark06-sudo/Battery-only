@@ -70,7 +70,7 @@ internal object BatteryCapacityEstimator {
             val percent = sample.percent
             val counter = sample.chargeCounterUah
             if (sample.bootCount == null || percent == null || percent !in 1..99 ||
-                counter == null || counter < 0L || mode == null) {
+                counter == null || !CounterDelta.isPlausibleReading(counter) || mode == null) {
                 flush()
                 continue
             }

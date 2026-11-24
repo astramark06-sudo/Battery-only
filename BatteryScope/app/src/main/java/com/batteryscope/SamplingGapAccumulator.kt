@@ -9,16 +9,36 @@ internal class SamplingGapAccumulator(private val targetMs: Long = 30_000L) {
         private set
     var longestMs = 0L
         private set
+    var invalidRateIntervals = 0L
+        private set
+    var nonPositiveIntervals = 0L
+        private set
+    var intervalsAtLeastDoubleTarget = 0L
+        private set
+    var validIntervalMs = 0L
+        private set
+    var knownReboots = 0L
+        private set
     private var intervals = 0L
     private var intervalTotal = 0L
 
-    fun accept(deltaMs: Long) {
-        if (deltaMs <= 0L) return
+    private fun saturatedSum(a: Long, b: Long): Long =
+        if (b > Long.MAX_VALUE - a) Long.MAX_VALUE else a + b
+
+    fun accept(deltaMs: Long, rateEligible: Boolean = deltaMs in 1_000L..targetMs * 3L, knownReboot: Boolean = false) {
+        if (knownReboot) knownReboots++
+        if (!rateEligible || knownReboot || deltaMs <= 0L) invalidRateIntervals++
+        if (deltaMs <= 0L) {
+            nonPositiveIntervals++
+            return
+        }
+        if (rateEligible && !knownReboot) validIntervalMs = saturatedSum(validIntervalMs, deltaMs)
         intervals++
-        intervalTotal += deltaMs
+        intervalTotal = saturatedSum(intervalTotal, deltaMs)
+        if (deltaMs >= targetMs * 2L) intervalsAtLeastDoubleTarget++
         if (deltaMs > targetMs * 3L) {
             gaps++
-            missingMs += deltaMs - targetMs
+            missingMs = saturatedSum(missingMs, deltaMs - targetMs)
             longestMs = maxOf(longestMs, deltaMs)
         }
     }
