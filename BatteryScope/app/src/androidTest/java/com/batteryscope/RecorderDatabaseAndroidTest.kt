@@ -49,6 +49,8 @@ class RecorderDatabaseAndroidTest {
         val before = backup(db)
         val focused = db.historySummary(31000,chargingFocus=true)
         assertTrue(focused.contains("MOST RECENT CHARGING SESSION"))
+        assertTrue(focused.contains("CHARGING MEASUREMENT EVIDENCE"))
+        assertTrue(focused.contains("30–40%: 120.00 pp/h"))
         assertTrue(focused.contains("30% → 31%"))
         assertFalse(focused.contains("Foreground app time"))
         assertFalse(focused.contains("DEVICE RESOURCE HISTORY"))

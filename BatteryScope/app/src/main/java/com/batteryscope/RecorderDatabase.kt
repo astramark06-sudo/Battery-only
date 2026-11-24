@@ -240,6 +240,23 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         }
     }
 
+    private fun chargingEvidenceReport(now: Long, range: SnapshotRange): String {
+        val profile = ChargingProfile()
+        readableDatabase.rawQuery(
+            "SELECT elapsed_realtime_ms,boot_count,battery_percent,battery_status,plug_type,battery_voltage_mv,battery_current_ua,temperature_c,charge_counter_uah,usb_voltage_candidate_uv,usb_current_candidate_ua FROM samples INDEXED BY idx_samples_time WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id",
+            windowArgs(now-30L*86_400_000L,now,range)
+        ).use { cursor ->
+            fun intOrNull(i: Int) = if (cursor.isNull(i)) null else cursor.getLong(i).takeIf { it in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong() }?.toInt()
+            fun longOrNull(i: Int) = if (cursor.isNull(i)) null else cursor.getLong(i)
+            while (cursor.moveToNext()) profile.accept(ChargingProfile.Sample(
+                cursor.getLong(0),intOrNull(1),intOrNull(2),cursor.getString(3),cursor.getString(4),
+                intOrNull(5),longOrNull(6),if (cursor.isNull(7)) null else cursor.getDouble(7),
+                longOrNull(8),longOrNull(9),longOrNull(10)
+            ))
+        }
+        return profile.report()
+    }
+
     fun historySummary(now: Long = System.currentTimeMillis(), chargingFocus: Boolean = false): String {
         val windows = listOf(
             "24 HOURS" to 24L * 60 * 60 * 1000,
@@ -318,7 +335,8 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 }
             }
             appendLine()
-            if (!chargingFocus) appendLine(resourceHistoryReport(now, range))
+            if (chargingFocus) appendLine(chargingEvidenceReport(now,range))
+            else appendLine(resourceHistoryReport(now, range))
             appendLine()
             appendLine("=== MOST RECENT CHARGING SESSION (LAST 30 DAYS) ===")
             appendLine(sessionReport(recent.charging.firstOrNull(), recent.hasSamples, true, chargingFocus))
