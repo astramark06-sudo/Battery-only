@@ -23,4 +23,7 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // JVM-only: exercise the same migration SQL against an actual SQLite engine.
+    testImplementation("org.xerial:sqlite-jdbc:3.46.1.3")
+    testImplementation("org.slf4j:slf4j-nop:1.7.36")
 }

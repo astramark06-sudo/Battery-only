@@ -594,45 +594,21 @@ class BatteryRecorderService : Service() {
 
 /** SQLite keeps raw samples/events until the user deletes app data. */
 class RecorderDatabase(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "batteryscope_history.db", null, 4) {
+    SQLiteOpenHelper(context.applicationContext, "batteryscope_history.db", null, RecorderSchema.VERSION) {
 
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("""CREATE TABLE samples (
-            timestamp_ms INTEGER PRIMARY KEY, elapsed_realtime_ms INTEGER NOT NULL, boot_count INTEGER,
-            battery_percent INTEGER, battery_status TEXT NOT NULL, plug_type TEXT NOT NULL,
-            battery_voltage_mv INTEGER, battery_current_ua INTEGER, battery_average_current_ua INTEGER,
-            max_charging_current_ua INTEGER, max_charging_voltage_uv INTEGER, battery_present INTEGER, invalid_charger_state INTEGER, battery_cycle_count INTEGER,
-            charge_counter_uah INTEGER, energy_counter_nwh INTEGER, temperature_c REAL,
-            battery_health TEXT, technology TEXT, screen_on INTEGER NOT NULL,
-            foreground_package TEXT, usage_access INTEGER NOT NULL, power_supply_json TEXT,
-            usb_voltage_candidate_uv INTEGER, usb_current_candidate_ua INTEGER
-        )""".trimIndent())
-        db.execSQL("CREATE INDEX idx_samples_time ON samples(timestamp_ms)")
-        db.execSQL("CREATE INDEX idx_samples_state_time ON samples(battery_status,timestamp_ms)")
-        db.execSQL("""CREATE TABLE events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp_ms INTEGER NOT NULL,
-            event_type TEXT NOT NULL, details TEXT
-        )""".trimIndent())
-        db.execSQL("CREATE INDEX idx_events_time ON events(timestamp_ms)")
-    }
+    override fun onCreate(db: SQLiteDatabase) = RecorderSchema.create { sql -> db.execSQL(sql) }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion < 2) {
-            db.execSQL("ALTER TABLE samples ADD COLUMN boot_count INTEGER")
-        }
-        if (oldVersion < 3) {
-            db.execSQL("ALTER TABLE samples ADD COLUMN max_charging_current_ua INTEGER")
-            db.execSQL("ALTER TABLE samples ADD COLUMN max_charging_voltage_uv INTEGER")
-            db.execSQL("ALTER TABLE samples ADD COLUMN battery_present INTEGER")
-            db.execSQL("ALTER TABLE samples ADD COLUMN battery_cycle_count INTEGER")
-        }
-        if (oldVersion < 4) {
-            db.execSQL("ALTER TABLE samples ADD COLUMN invalid_charger_state INTEGER")
+        RecorderSchema.upgrade(oldVersion, newVersion, { sql -> db.execSQL(sql) }) { sql ->
+            db.rawQuery(sql, null).use { cursor ->
+                check(cursor.moveToFirst())
+                cursor.getLong(0)
+            }
         }
     }
 
     fun insertSample(values: ContentValues) {
-        // Preserve the earlier sample on a wall-clock collision and report the failed insert.
+        // Independent sample ID preserves even repeated wall-clock timestamps.
         writableDatabase.insertOrThrow("samples", null, values)
     }
 
@@ -650,7 +626,7 @@ class RecorderDatabase(context: Context) :
         val from = nowMs - 90L * 24L * 60L * 60L * 1000L
         val empiricalReport = readableDatabase.rawQuery(
             """SELECT timestamp_ms,elapsed_realtime_ms,boot_count,battery_percent,battery_status,plug_type,charge_counter_uah
-               FROM samples WHERE timestamp_ms>=? ORDER BY boot_count,elapsed_realtime_ms,timestamp_ms""".trimIndent(),
+               FROM samples WHERE timestamp_ms>=? ORDER BY boot_count,elapsed_realtime_ms,id""".trimIndent(),
             arrayOf(from.toString())
         ).use { cursor ->
             val time = cursor.getColumnIndexOrThrow("timestamp_ms")
@@ -673,7 +649,7 @@ class RecorderDatabase(context: Context) :
             })
         }
         val latestHardwareJson = readableDatabase.rawQuery(
-            "SELECT power_supply_json FROM samples WHERE power_supply_json IS NOT NULL ORDER BY timestamp_ms DESC LIMIT 1",
+            "SELECT power_supply_json FROM samples WHERE power_supply_json IS NOT NULL ORDER BY id DESC LIMIT 1",
             null
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
         val kernelReport = buildString {
@@ -740,7 +716,7 @@ class RecorderDatabase(context: Context) :
         // Only recent session detail is materialised; rolling statistics stream directly from SQLite.
         val recentRows = readWindow(now - 30L * 24 * 60 * 60 * 1000)
         val latestPercent = readableDatabase.rawQuery(
-            "SELECT battery_percent FROM samples WHERE battery_percent IS NOT NULL ORDER BY timestamp_ms DESC LIMIT 1", null
+            "SELECT battery_percent FROM samples WHERE battery_percent IS NOT NULL ORDER BY id DESC LIMIT 1", null
         ).use { if (it.moveToFirst()) it.getInt(0) else null }
         return buildString {
             val total = readableDatabase.rawQuery("SELECT COUNT(*) FROM samples", null).use {
@@ -798,7 +774,7 @@ class RecorderDatabase(context: Context) :
             appendLine()
             appendLine("Rate intervals outside 1–90 seconds and known reboot boundaries are excluded. Screen-state rates omit mixed-state endpoints; counter rates use valid counter intervals only. Threshold times are resolved to the sample interval, not exact hardware event times.")
             val last = readableDatabase.rawQuery(
-                "SELECT timestamp_ms,battery_percent,battery_status,plug_type,foreground_package FROM samples ORDER BY timestamp_ms DESC LIMIT 1", null
+                "SELECT timestamp_ms,battery_percent,battery_status,plug_type,foreground_package FROM samples ORDER BY id DESC LIMIT 1", null
             ).use { cursor ->
                 if (!cursor.moveToFirst()) "No sample recorded yet"
                 else "Last sample: " + cursor.getLong(0) + " • " +
@@ -848,7 +824,7 @@ class RecorderDatabase(context: Context) :
     private fun readWindow(from: Long): List<Row> {
         val rows = mutableListOf<Row>()
         readableDatabase.rawQuery(
-            "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count FROM samples WHERE timestamp_ms>=? ORDER BY timestamp_ms",
+            "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count FROM samples WHERE timestamp_ms>=? ORDER BY id",
             arrayOf(from.toString())
         ).use { c ->
             while (c.moveToNext()) rows += Row(
@@ -870,7 +846,7 @@ class RecorderDatabase(context: Context) :
         var intervalTotal = 0L
         var previous: Row? = null
         readableDatabase.rawQuery(
-            "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count FROM samples WHERE timestamp_ms>=? ORDER BY timestamp_ms",
+            "SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count FROM samples WHERE timestamp_ms>=? ORDER BY id",
             arrayOf(from.toString())
         ).use { cursor ->
             while (cursor.moveToNext()) {
@@ -949,7 +925,7 @@ class RecorderDatabase(context: Context) :
         var previous: Row? = null
         readableDatabase.rawQuery(
             """SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count
-               FROM samples WHERE timestamp_ms>=? ORDER BY timestamp_ms""".trimIndent(),
+               FROM samples WHERE timestamp_ms>=? ORDER BY id""".trimIndent(),
             arrayOf(from.toString())
         ).use { cursor ->
             val iTime = cursor.getColumnIndexOrThrow("timestamp_ms")
@@ -1262,7 +1238,7 @@ class RecorderDatabase(context: Context) :
     fun exportCsv(writer: Writer): Long {
         writer.write(RecorderCsv.encodeRow(RecorderCsv.header))
         var count = 0L
-        readableDatabase.rawQuery("SELECT * FROM samples ORDER BY timestamp_ms", null).use { samples ->
+        readableDatabase.rawQuery("SELECT * FROM samples ORDER BY timestamp_ms,id", null).use { samples ->
             readableDatabase.rawQuery("SELECT timestamp_ms,event_type,details FROM events ORDER BY timestamp_ms,id", null).use { events ->
                 val timestampColumn = samples.getColumnIndexOrThrow("timestamp_ms")
                 var hasSample = samples.moveToFirst()
