@@ -38,7 +38,7 @@ internal object CounterDelta {
         if (!isPlausibleReading(before) || !isPlausibleReading(after)) null else after!! - before!!
 
     fun isPlausibleIntervalDelta(delta: Long, durationMs: Long): Boolean {
-        if (!RecorderTimeMath.isRateInterval(durationMs, null, null)) return false
+        if (!RecorderTimeMath.isRateDuration(durationMs)) return false
         val limit = MAX_ABS_CURRENT_UA * durationMs / 3_600_000L + QUANTIZATION_ALLOWANCE_UAH
         return delta in -limit..limit
     }

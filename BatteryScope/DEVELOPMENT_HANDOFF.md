@@ -1,5 +1,9 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Fix counter-duration regression from boot policy
+
+- Cumulative run [45480551635](https://github.com/astramark06-sudo/Battery-only/actions/runs/45480551635) failed four CounterRateAccumulatorTest methods: duration-only plausibility called the newly strict boot-aware method with null boot counts. Split numerical duration validation from known-boot eligibility. The history and session callers still enforce boot continuity. Added explicit regression for valid duration/counter delta with no boot context. New CI required; previous run must not be treated as passing.
+
 ## 2026-11-25 — Conservative boot and permission-aware endpoint correlation (R30 partial)
 
 - R30: rate eligibility now requires a nonnegative known matching boot count at both endpoints. Older unknown-boot records remain in raw storage/exports and gap counts, but are excluded from rate/session estimates. Summary counts unknown-identity intervals explicitly. App correlation now additionally requires recorded Usage Access at both endpoints; live recorder checks permission before and after the usage query and does not store a package when access is unavailable.

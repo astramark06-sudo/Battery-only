@@ -18,6 +18,17 @@ class RecorderTimeMathTest {
     }
 
     @Test
+    fun numericDurationCheckDoesNotRequireBootMetadata() {
+        org.junit.Assert.assertTrue(RecorderTimeMath.isRateDuration(30_000L))
+        org.junit.Assert.assertFalse(RecorderTimeMath.isRateInterval(30_000L,null,null))
+        org.junit.Assert.assertTrue(RecorderTimeMath.isRateDuration(1_000L))
+        org.junit.Assert.assertTrue(RecorderTimeMath.isRateDuration(90_000L))
+        org.junit.Assert.assertFalse(RecorderTimeMath.isRateDuration(999L))
+        org.junit.Assert.assertFalse(RecorderTimeMath.isRateDuration(90_001L))
+        assertEquals(45_000L,CounterDelta.forInterval(1_000_000L,1_045_000L,30_000L)!!)
+    }
+
+    @Test
     fun appCorrelationRequiresTwoInteractiveMatchingEndpoints() {
         org.junit.Assert.assertTrue(RecorderTimeMath.sameForegroundApp(true, true, "app.a", "app.a", true, true))
         org.junit.Assert.assertFalse(RecorderTimeMath.sameForegroundApp(false, true, "app.a", "app.a", true, true))

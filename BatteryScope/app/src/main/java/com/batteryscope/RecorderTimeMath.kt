@@ -9,9 +9,12 @@ import kotlin.math.abs
 internal object RecorderTimeMath {
     private const val UNKNOWN_BOOT_TOLERANCE_MS = 120_000L
 
+    /** Numerical duration validation only; this does not establish boot continuity. */
+    fun isRateDuration(intervalMs: Long): Boolean = intervalMs in 1_000L..90_000L
+
     /** Rates require a known shared boot identity. Gap reporting can use wall time. */
     fun isRateInterval(intervalMs: Long, beforeBootCount: Int?, afterBootCount: Int?): Boolean =
-        intervalMs in 1_000L..90_000L &&
+        isRateDuration(intervalMs) &&
             beforeBootCount != null && beforeBootCount >= 0 && beforeBootCount == afterBootCount
 
     /** Endpoint correlation is not proof of continuous foreground occupancy. */
