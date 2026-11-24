@@ -83,10 +83,14 @@ internal object HardwareSnapshotCache {
     @Synchronized fun snapshot(context: Context, maxAgeMs: Long): Map<String,String> {
         val now = SystemClock.elapsedRealtime()
         if(completedAt >= 0 && now - completedAt in 0 until maxAgeMs) return last
+        val startedWall = System.currentTimeMillis()
         val fields = KernelInventory.scan().toMutableMap()
         fields.putAll(DeviceTelemetry.collect(context.applicationContext))
         completedAt = SystemClock.elapsedRealtime()
+        fields["@inventory_started_elapsed_ms"] = now.toString()
+        fields["@inventory_started_wall_ms"] = startedWall.toString()
         fields["@inventory_completed_elapsed_ms"] = completedAt.toString()
+        fields["@inventory_completed_wall_ms"] = System.currentTimeMillis().toString()
         last = fields.toMap()
         return last
     }

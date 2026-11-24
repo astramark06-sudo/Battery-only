@@ -54,8 +54,12 @@ class BatteryRecorderService : Service() {
     private val lastBatteryPropertyStatus = mutableMapOf<Int, String>()
     private var lastCurrentMeasurementQuality: String? = null
     private var lastVoltageMeasurementQuality: String? = null
-    private var lastSysfsReadMs = 0L
-    private var lastSysfsJson = JSONObject()
+    private lateinit var inventoryWorker: HandlerThread
+    private lateinit var inventoryHandler: Handler
+    private val inventoryHandoff = InventoryHandoff<Map<String, String>>(SYSFS_INTERVAL_MS)
+    private var nextDeadlineElapsedMs = 0L
+    private val notificationHandler = Handler(Looper.getMainLooper())
+    private var lastNotificationState: String? = null
     private var receiverRegistered = false
     @Volatile private var recorderRunning = false
     private var samplingWakeLock: PowerManager.WakeLock? = null
@@ -80,8 +84,14 @@ class BatteryRecorderService : Service() {
         override fun run() {
             if (!recorderRunning) return
             val started = SystemClock.elapsedRealtime()
+            // Handler uses uptime; elapsed-realtime deadlines also reflect suspend.
+            if (started < nextDeadlineElapsedMs) {
+                if (!handler.postDelayed(this, nextDeadlineElapsedMs - started))
+                    recordOutcome(started, SystemClock.elapsedRealtime(), "Recorder worker rejected next sample")
+                return
+            }
             var failure: String? = null
-            try { sample() }
+            try { sample(started) }
             catch (t: Exception) { failure = t.javaClass.simpleName + ": " + (t.message ?: "unknown") }
             catch (fatal: Error) {
                 recordOutcome(started, SystemClock.elapsedRealtime(), "Fatal sample failure: " + fatal.javaClass.simpleName)
@@ -91,11 +101,23 @@ class BatteryRecorderService : Service() {
             recordOutcome(started, finished, failure)
             failure?.let { event("SAMPLE_ERROR", it) }
             if (recorderRunning) {
-                val delay = RecorderCadence.nextDelayMs(started, SystemClock.elapsedRealtime(), SAMPLE_INTERVAL_MS)
+                val next = RecorderCadence.nextSlot(nextDeadlineElapsedMs, SystemClock.elapsedRealtime(), SAMPLE_INTERVAL_MS)
+                nextDeadlineElapsedMs = next.elapsedMs
+                sampleHealth = sampleHealth.skipped(next.skipped)
+                val delay = (next.elapsedMs - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
                 if (!handler.postDelayed(this, delay)) {
                     recordOutcome(started, SystemClock.elapsedRealtime(), "Recorder worker rejected next sample")
                 }
             }
+        }
+    }
+
+    // Main-thread observation of stale state also works while a worker is blocked.
+    private val notificationWatch = object : Runnable {
+        override fun run() {
+            if (!recorderRunning) return
+            refreshRecorderNotification()
+            notificationHandler.postDelayed(this, 15_000L)
         }
     }
 
@@ -105,6 +127,8 @@ class BatteryRecorderService : Service() {
         batteryManager = getSystemService(BATTERY_SERVICE) as BatteryManager
         worker = HandlerThread("BatteryScopeRecorder").apply { start() }
         handler = Handler(worker.looper)
+        inventoryWorker = HandlerThread("BatteryScopeInventory").apply { start() }
+        inventoryHandler = Handler(inventoryWorker.looper)
         batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         createChannel()
         registerEvents()
@@ -126,9 +150,11 @@ class BatteryRecorderService : Service() {
                 .remove(KEY_BOOT_RESUME_FAILURE).remove(KEY_BOOT_RESUME_FAILURE_AT)
                 .remove(KEY_START_FAILURE).apply()
             if (!wasRunning) {
-                sampleHealth = RecorderHealth(SystemClock.elapsedRealtime())
+                nextDeadlineElapsedMs = SystemClock.elapsedRealtime()
+                sampleHealth = RecorderHealth(nextDeadlineElapsedMs)
                 recorderRunning = true
                 activeRecorder = this
+                notificationHandler.post(notificationWatch)
                 event(if (intent == null) "RECORDER_RESTARTED" else "RECORDER_STARTED",
                     "Foreground recorder; 30-second target; wake lock requested=$keepAwake held=$held")
                 handler.removeCallbacks(sampler)
@@ -140,6 +166,7 @@ class BatteryRecorderService : Service() {
         } catch (t: Throwable) {
             recorderRunning = false
             if (activeRecorder === this) activeRecorder = null
+            notificationHandler.removeCallbacksAndMessages(null)
             handler.removeCallbacks(sampler)
             releaseSamplingWakeLock()
             val failure = t.javaClass.simpleName + ": " + (t.message ?: "unknown")
@@ -152,15 +179,27 @@ class BatteryRecorderService : Service() {
     }
 
     private fun startAsForeground() {
-        val notification = recorderNotification()
+        val state = sampleHealth.state(SystemClock.elapsedRealtime())
+        val notification = recorderNotification(state)
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        lastNotificationState = state
     }
 
-    private fun recorderNotification(): Notification {
+    private fun refreshRecorderNotification() {
+        if (activeRecorder !== this || !recorderRunning) return
+        val state = sampleHealth.state(SystemClock.elapsedRealtime())
+        if (lastNotificationState == state) return
+        try {
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, recorderNotification(state))
+            lastNotificationState = state
+        } catch (_: Exception) { /* Live health still remains available in the UI. */ }
+    }
+
+    private fun recorderNotification(health: String): Notification {
         val requested = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_KEEP_CPU_AWAKE, true)
         val held = samplingWakeLock?.isHeld == true
         val status = when {
@@ -170,7 +209,6 @@ class BatteryRecorderService : Service() {
         }
         val openApp = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val health = sampleHealth.state(SystemClock.elapsedRealtime())
         val title = when (health) {
             "DEGRADED" -> "BatteryScope: sample failed; retrying"
             "STALE" -> "BatteryScope: recording not confirmed"
@@ -190,7 +228,6 @@ class BatteryRecorderService : Service() {
 
     /** Independent of SQLite: an unwritable DB must not hide sample failures. */
     private fun recordOutcome(started: Long, finished: Long, failure: String?) {
-        val prior = sampleHealth.state(finished)
         sampleHealth = sampleHealth.completed(started, finished, failure?.take(300))
         if (activeRecorder !== this || !recorderRunning) return
         try {
@@ -204,14 +241,7 @@ class BatteryRecorderService : Service() {
             // Best effort on disk; process-local health remains available if persistence fails.
             edit.apply()
         } catch (_: Exception) { /* Persistence must not stop the next sample. */ }
-        if (prior != sampleHealth.state(finished)) {
-            Handler(Looper.getMainLooper()).post {
-                if (activeRecorder === this && recorderRunning) {
-                    try { getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, recorderNotification()) }
-                    catch (_: Exception) { /* UI still exposes the live health snapshot. */ }
-                }
-            }
-        }
+        notificationHandler.post { refreshRecorderNotification() }
     }
 
     private fun acquireSamplingWakeLock() {
@@ -264,9 +294,10 @@ class BatteryRecorderService : Service() {
         receiverRegistered = true
     }
 
-    private fun sample() {
+    private fun sample(elapsed: Long) {
         val now = System.currentTimeMillis()
-        val elapsed = SystemClock.elapsedRealtime()
+        val inventory = inventoryHandoff.readyFor(elapsed)
+        requestInventory(elapsed)
         val bootCount = try { Settings.Global.getInt(contentResolver, Settings.Global.BOOT_COUNT, -1).takeIf { it >= 0 } } catch (_: Throwable) { null }
         val intent = batteryIntent ?: registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)).also { batteryIntent = it }
         val level = intent?.extras?.let {
@@ -343,12 +374,14 @@ class BatteryRecorderService : Service() {
         }
         val screenOn = (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
         val activeApp = updateForegroundPackage(now)
-        val refreshSysfs = lastSysfsReadMs == 0L || elapsed - lastSysfsReadMs >= SYSFS_INTERVAL_MS
-        if (refreshSysfs) {
-            lastSysfsJson = readHardwareTrees()
-            lastSysfsReadMs = elapsed
+        val inventoryJson = inventory?.let {
+            JSONObject(it.value)
+                .put("@inventory_request_started_elapsed_ms", it.startedElapsedMs)
+                .put("@inventory_request_finished_elapsed_ms", it.finishedElapsedMs)
+                .put("@inventory_associated_sample_elapsed_ms", elapsed)
+                .put("@inventory_associated_sample_wall_ms", now)
         }
-        val usb = findUsbCandidate(lastSysfsJson)
+        val usb = inventoryJson?.let { findUsbCandidate(it) }
         val row = ContentValues().apply {
             put("timestamp_ms", now)
             put("elapsed_realtime_ms", elapsed)
@@ -377,13 +410,18 @@ class BatteryRecorderService : Service() {
             put("screen_on", if (screenOn) 1 else 0)
             put("foreground_package", activeApp ?: "")
             put("usage_access", if (hasUsageAccess()) 1 else 0)
-            if (refreshSysfs) put("power_supply_json", lastSysfsJson.toString())
-            if (refreshSysfs && usb != null) {
+            if (inventoryJson != null) {
+                inventoryJson.put("@recorder/sample_collection_finished_elapsed_ms", SystemClock.elapsedRealtime())
+                put("power_supply_json", inventoryJson.toString())
+            }
+            if (usb != null) {
                 put("usb_voltage_candidate_uv", usb.first)
                 put("usb_current_candidate_ua", usb.second)
             }
         }
         insertSample(row)
+        // A failed insert leaves this exact snapshot pending for the next sample.
+        if (inventory != null) inventoryHandoff.committed(inventory)
     }
 
     private fun longProperty(id: Int): Long? {
@@ -469,8 +507,30 @@ class BatteryRecorderService : Service() {
         }
     }
 
-    private fun readHardwareTrees(): JSONObject =
-        JSONObject(HardwareSnapshotCache.snapshot(applicationContext, SYSFS_INTERVAL_MS))
+    private fun requestInventory(nowElapsedMs: Long) {
+        if (!inventoryHandoff.request(nowElapsedMs)) return
+        if (!inventoryHandler.post {
+            var completed = false
+            try {
+                if (recorderRunning) {
+                    val started = SystemClock.elapsedRealtime()
+                    val fields = HardwareSnapshotCache.snapshot(applicationContext, SYSFS_INTERVAL_MS)
+                    val finished = SystemClock.elapsedRealtime()
+                    if (recorderRunning) {
+                        inventoryHandoff.complete(fields, started, finished)
+                        completed = true
+                    }
+                }
+            } catch (e: Exception) {
+                if (recorderRunning) event("INVENTORY_ERROR", e.javaClass.simpleName)
+            } finally {
+                if (!completed) inventoryHandoff.failed()
+            }
+        }) {
+            inventoryHandoff.failed()
+            event("INVENTORY_ERROR", "WORKER_QUEUE_REJECTED")
+        }
+    }
 
     private fun findUsbCandidate(json: JSONObject): Pair<Long, Long>? {
         val keys = json.keys()
@@ -543,7 +603,10 @@ class BatteryRecorderService : Service() {
     override fun onDestroy() {
         recorderRunning = false
         if (activeRecorder === this) activeRecorder = null
+        notificationHandler.removeCallbacksAndMessages(null)
         handler.removeCallbacks(sampler)
+        if (::inventoryHandler.isInitialized) inventoryHandler.removeCallbacksAndMessages(null)
+        if (::inventoryWorker.isInitialized) inventoryWorker.quitSafely()
         releaseSamplingWakeLock()
         if (receiverRegistered) try { unregisterReceiver(receiver) } catch (_: Throwable) { }
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_ACTIVE, false).putBoolean(KEY_WAKE_LOCK_HELD, false).apply()

@@ -11,6 +11,17 @@ class RecorderHealthTest {
         assertEquals(25_000L, RecorderCadence.nextDelayMs(100,35_100,30_000))
         assertEquals(5_000L, RecorderCadence.nextDelayMs(100,85_100,30_000))
     }
+    @Test fun fixedDeadlineDoesNotReanchorToLateCallbacksAndCountsSkippedSlots() {
+        assertEquals(RecorderCadence.Slot(31_000L,0L), RecorderCadence.nextSlot(1000L,5000L,30_000L))
+        assertEquals(RecorderCadence.Slot(61_000L,0L), RecorderCadence.nextSlot(31_000L,45_000L,30_000L))
+        assertEquals(RecorderCadence.Slot(121_000L,3L), RecorderCadence.nextSlot(1000L,96_000L,30_000L))
+        assertEquals(RecorderCadence.Slot(61_000L,1L), RecorderCadence.nextSlot(1000L,31_000L,30_000L))
+        val health = RecorderHealth(0L).skipped(3L).skipped(2L)
+        assertEquals(5L,health.skippedDeadlines)
+        assertTrue(health.report(0L).contains("skipped sampling deadlines this service session 5"))
+        assertEquals(Long.MAX_VALUE,health.skipped(Long.MAX_VALUE).skippedDeadlines)
+    }
+
     @Test fun startupAndStaleAreNotReportedAsRecording() {
         val starting = RecorderHealth(100)
         assertEquals("WAITING_FOR_FIRST_SAMPLE", starting.state(100))

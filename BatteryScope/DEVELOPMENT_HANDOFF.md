@@ -1,5 +1,14 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Asynchronous inventory and fixed recorder deadlines (R10/R11 follow-up)
+
+- Preserved the newer `66e0cfacf9df12bc3b3ec54df89923c0127937b7` checkpoint, including its recorder health, operation feedback and import-validation changes. No overwrite or merge of the earlier competing implementation.
+- R10: slow hardware inventory now runs on a separate HandlerThread. A bounded synchronized handoff permits only one outstanding or pending snapshot; an inventory must have completed before the battery sample starts, and is acknowledged only after successful database insertion. A failed insert retains the exact pending result. Cache acquisition start/end and request/association timestamps explicitly distinguish asynchronous or cached hardware/USB observations from battery sample time. No new database columns or permissions.
+- Recorder maintains one elapsed-realtime sampling phase, counts skipped deadlines and does not generate catch-up bursts. A main-thread notification watchdog checks stale state every 15 seconds while the process can run; it does not issue duplicate notification updates. Handler scheduling remains subject to suspend and OS restrictions; UsageStats and SQLite latency can still delay samples. No guarantee of continuous sampling or simultaneous sensor readings.
+- Added four JVM regression test methods (three inventory handoff and one fixed cadence). Independent local Kotlin compilation of exact new helpers matched Git blob hashes `27b8725924fa6d7ea810ae8f4700b7e658c7d859` and `29de809070f60522e2a1f030707dda7a0ce15ab1`; 8,042 assertions passed, including a deadline sweep, failed-insert retention, stale acknowledgement, retry cadence and health state. This is pure-helper verification, not a service, Android build, or physical timing test. New PR CI remains required.
+- No schema, application ID, version, signing, history deletion or APK release changes. Next: verify CI for this exact head, R12/R13 database concurrency and long-history benchmarks, real device recorder timing and release signing.
+
+
 ## 2026-11-25 — Import integrity and recorder verification (R14/R38; partial R12)
 
 - Recorder cadence/health helper at `470983562593dc2c667cdb3282c0b7b749df3356`: independently compiled exact Git-blob-matched Kotlin helper; 1,333 checks passed (including a duration sweep). Follow-up `8580b067e504b3b58276380265cb619ace8b29f8` prevents fatal errors being reported as successful commits and isolates preference write failures. Android CI for new source must be checked separately.
