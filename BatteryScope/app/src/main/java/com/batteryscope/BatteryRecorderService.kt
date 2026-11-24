@@ -637,6 +637,44 @@ class RecorderDatabase(context: Context) :
         }
     }
 
+    private fun resourceHistoryReport(now: Long): String {
+        val summary = ResourceHistory()
+        val from = now - 24L * 60L * 60L * 1000L
+        readableDatabase.rawQuery(
+            "SELECT boot_count,power_supply_json FROM samples WHERE timestamp_ms>=? AND timestamp_ms<=? AND power_supply_json IS NOT NULL ORDER BY id",
+            arrayOf(from.toString(),now.toString())
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val json = try { JSONObject(cursor.getString(1)) } catch (_: Exception) { continue }
+                fun number(key: String) = json.optString("@device/" + key).toLongOrNull()?.takeIf { it >= 0L }
+                val wall = number("captured_wall_ms") ?: continue
+                val elapsed = number("captured_elapsed_ms") ?: continue
+                if (wall !in from..now) continue
+                summary.accept(ResourceObservation(wall,elapsed,
+                    if(cursor.isNull(0)) null else cursor.getInt(0),
+                    number("memory/total_bytes"),number("memory/available_bytes"),number("storage/available_bytes"),
+                    number("power/thermal_status")?.takeIf { it in 0L..6L }?.toInt(),
+                    ResourceHistory.counterNames.map { number("network/" + it + "_bytes_since_boot") }
+                ))
+            }
+        }
+        fun mib(value: Long?) = value?.let { String.format(Locale.US,"%.1f MiB",it/1048576.0) } ?: "unavailable"
+        return buildString {
+            appendLine("=== DEVICE RESOURCE HISTORY (LAST 24 HOURS) ===")
+            appendLine("Distinct resource snapshots: " + summary.snapshots)
+            appendLine("Available RAM observed range: " + mib(summary.lowestAvailableRam) + " — " + mib(summary.highestAvailableRam))
+            appendLine("Lowest available internal storage: " + mib(summary.lowestAvailableStorage))
+            appendLine("Highest Android thermal status: " + (summary.highestThermalStatus?.toString() ?: "unavailable"))
+            appendLine("Network traffic across valid observed intervals only:")
+            ResourceHistory.counterNames.forEachIndexed { i, name ->
+                val counter = summary.counters[i]
+                appendLine("  " + name + ": " + if(counter.intervals == 0) "unavailable" else
+                    mib(counter.bytes) + " • coverage " + durationText(counter.coveredMs) + " • " + counter.intervals + " intervals")
+            }
+            append("Network totals are incomplete observations, not continuous full-day totals or per-app electrical measurements. Counter resets, reboots, clock discontinuities and gaps over 5 minutes are excluded.")
+        }
+    }
+
     fun historySummary(now: Long = System.currentTimeMillis()): String {
         val windows = listOf(
             "24 HOURS" to 24L * 60 * 60 * 1000,
@@ -692,6 +730,8 @@ class RecorderDatabase(context: Context) :
                     appendLine("  " + app.name + ": " + app.minutes + " min foreground • +" + app.chargePct + "% charging (counter " + app.counter(app.chargeCounterMah) + ") • -" + app.drainPct + "% unplugged (counter " + app.counter(app.drainCounterMah) + ") • -" + app.pluggedDrainPct + "% connected (counter " + app.counter(app.pluggedDrainCounterMah) + ")")
                 }
             }
+            appendLine()
+            appendLine(resourceHistoryReport(now))
             appendLine()
             appendLine("=== MOST RECENT CHARGING SESSION (LAST 30 DAYS) ===")
             appendLine(sessionReport(recentRows, true))

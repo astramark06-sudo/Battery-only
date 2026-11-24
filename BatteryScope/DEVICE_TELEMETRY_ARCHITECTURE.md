@@ -1,5 +1,9 @@
 # BatteryScope — device-wide telemetry architecture and capability audit
 
+## 2026-11-25 — Resource history summary
+
+Added 24-hour resource-history summary from stored acquisition timestamps: observed RAM range, minimum available internal storage, peak Android thermal status, and per-counter network bytes over valid intervals with explicit time coverage. Excludes repeated cached snapshots, unknown boot identity, resets, wall-clock discontinuities and gaps over five minutes. Historical device samples prior to this collector remain readable and are excluded as unavailable; no synthetic backfill or schema change. CI pending.
+
 ## 2026-11-25 — Shared inventory and resource telemetry
 
 Unified dashboard and recorder hardware inventory via shared bounded read-only allowlist, full source paths in stored JSON, cached snapshots with acquisition timestamps. Added public Android RAM, internal storage, TrafficStats device/mobile/own UID cumulative bytes, power-save/idle/interactive/thermal status and headroom, processor count and sensor-type inventory. No extra permission, sensor streams, network transmission or schema/CSV changes. CPU/GPU frequency fields are raw optional sysfs only, not utilization. USB candidate requires online=1 and same power_supply source. Dashboard resource snapshot refreshes no faster than 60 s; recorder inventory cadence remains 120 s. Device support and monitoring overhead remain unverified. CI pending.
