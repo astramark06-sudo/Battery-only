@@ -1246,35 +1246,36 @@ class RecorderDatabase(context: Context) :
         else if (hours > 0) hours.toString() + "h " + remaining + "m" else remaining.toString() + "m"
     }
 
-    fun exportCsv(writer: Writer) {
-        writer.write(RecorderCsv.encodeRow(listOf("record_type","timestamp_ms","elapsed_realtime_ms","battery_percent","battery_status","plug_type","battery_voltage_mv","battery_current_ua","battery_average_current_ua","max_charging_current_ua","max_charging_voltage_uv","battery_present","invalid_charger_state","battery_cycle_count","charge_counter_uah","energy_counter_nwh","temperature_c","battery_health","technology","screen_on","foreground_package","usage_access","power_supply_json","usb_voltage_candidate_uv","usb_current_candidate_ua","boot_count","event_type","details")))
-        val sampleNames = listOf("battery_percent","battery_status","plug_type","battery_voltage_mv","battery_current_ua","battery_average_current_ua","max_charging_current_ua","max_charging_voltage_uv","battery_present","invalid_charger_state","battery_cycle_count","charge_counter_uah","energy_counter_nwh","temperature_c","battery_health","technology","screen_on","foreground_package","usage_access","power_supply_json","usb_voltage_candidate_uv","usb_current_candidate_ua","boot_count")
+    /** Returns the number of actual data records, excluding the header. */
+    fun exportCsv(writer: Writer): Long {
+        writer.write(RecorderCsv.encodeRow(RecorderCsv.header))
+        var count = 0L
         readableDatabase.rawQuery("SELECT * FROM samples ORDER BY timestamp_ms", null).use { samples ->
-            readableDatabase.rawQuery("SELECT timestamp_ms,event_type,details FROM events ORDER BY timestamp_ms", null).use { events ->
+            readableDatabase.rawQuery("SELECT timestamp_ms,event_type,details FROM events ORDER BY timestamp_ms,id", null).use { events ->
+                val timestampColumn = samples.getColumnIndexOrThrow("timestamp_ms")
                 var hasSample = samples.moveToFirst()
                 var hasEvent = events.moveToFirst()
                 while (hasSample || hasEvent) {
-                    val useSample = hasSample && (!hasEvent || samples.getLong(samples.getColumnIndexOrThrow("timestamp_ms")) <= events.getLong(0))
+                    val useSample = hasSample && (!hasEvent || samples.getLong(timestampColumn) <= events.getLong(0))
                     if (useSample) {
-                        val fields = mutableListOf(
-                            "SAMPLE",
-                            samples.getLong(samples.getColumnIndexOrThrow("timestamp_ms")).toString(),
-                            value(samples, "elapsed_realtime_ms")
+                        val row = RecorderCsv.sampleRow(
+                            samples.getLong(timestampColumn).toString(),
+                            value(samples, "elapsed_realtime_ms"),
+                            RecorderCsv.sampleFields.map { value(samples, it) }
                         )
-                        sampleNames.forEach { fields += value(samples, it) }
-                        fields += listOf("", "")
-                        writer.write(RecorderCsv.encodeRow(fields))
+                        writer.write(RecorderCsv.encodeRow(row))
                         hasSample = samples.moveToNext()
                     } else {
-                        val fields = listOf("EVENT", events.getLong(0).toString(), "") +
-                            List(sampleNames.size) { "" } + listOf(events.getString(1), events.getString(2))
-                        writer.write(RecorderCsv.encodeRow(fields))
+                        val row = RecorderCsv.eventRow(events.getLong(0).toString(), events.getString(1), events.getString(2) ?: "")
+                        writer.write(RecorderCsv.encodeRow(row))
                         hasEvent = events.moveToNext()
                     }
+                    count++
                 }
             }
         }
         writer.flush()
+        return count
     }
     private fun value(c: Cursor, column: String): String {
         val index = c.getColumnIndexOrThrow(column)

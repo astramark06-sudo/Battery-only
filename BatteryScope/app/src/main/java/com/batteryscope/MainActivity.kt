@@ -105,7 +105,18 @@ class MainActivity : Activity() {
         telemetryThread = HandlerThread("BatteryScopeLiveTelemetry").apply { start() }
         telemetryHandler = android.os.Handler(telemetryThread.looper)
         buildUi()
+        pendingExportFile = restorePendingExport(savedInstanceState?.getString(PENDING_EXPORT_NAME))
         refreshReadings()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        pendingExportFile?.let { outState.putString(PENDING_EXPORT_NAME, it.name) }
+    }
+
+    private fun restorePendingExport(name: String?): File? {
+        if (name == null || !name.matches(Regex("BatteryScope_History_[0-9_]+[.]csv"))) return null
+        return File(File(filesDir, "exports"), name).takeIf { it.isFile }
     }
 
     override fun onResume() {
@@ -770,7 +781,7 @@ class MainActivity : Activity() {
     }
 
     private fun exportRecorderHistory() {
-        if (exportInFlight) {
+        if (exportInFlight || pendingExportFile != null) {
             statusText.text = "A history export is already in progress."
             return
         }
@@ -782,16 +793,18 @@ class MainActivity : Activity() {
             var failure: String? = null
             var noData = false
             try {
-                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                val directory = File(getExternalFilesDir(null) ?: filesDir, "exports")
+                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+                val directory = File(filesDir, "exports")
                 if (!directory.exists() && !directory.mkdirs()) throw IllegalStateException("Could not create private export directory")
                 val exportFile = File(directory, "BatteryScope_History_" + timestamp + ".csv")
                 file = exportFile
                 database = RecorderDatabase(applicationContext)
-                exportFile.bufferedWriter(Charsets.UTF_8).use { database!!.exportCsv(it) }
-                noData = exportFile.length() == 0L
+                val records = exportFile.bufferedWriter(Charsets.UTF_8).use { database!!.exportCsv(it) }
+                noData = records == 0L
+                if (noData) exportFile.delete()
             } catch (t: Throwable) {
                 failure = t.javaClass.simpleName + ": " + (t.message ?: "unknown")
+                file?.delete() // partial staging copy, never the database
             } finally {
                 try { database?.close() } catch (_: Throwable) { }
             }
@@ -834,7 +847,8 @@ class MainActivity : Activity() {
         val source = pendingExportFile
         pendingExportFile = null
         if (resultCode != RESULT_OK || data?.data == null) {
-            statusText.text = "CSV remains in app storage; document export was cancelled."
+            source?.delete() // Cancelled staging copy can be regenerated; raw SQLite history is untouched.
+            statusText.text = "Document export cancelled. Original telemetry remains in local history."
             return
         }
         val destination: Uri = data.data!!
@@ -852,6 +866,7 @@ class MainActivity : Activity() {
                 val output = resolver.openOutputStream(destination, "w")
                     ?: throw IllegalStateException("Android could not open the selected destination")
                 output.use { stream -> source.inputStream().use { input -> input.copyTo(stream) } }
+                source.delete() // remove only the staging copy after successful close
             } catch (t: Throwable) {
                 failure = t.javaClass.simpleName + ": " + (t.message ?: "unknown")
             }
@@ -869,6 +884,7 @@ class MainActivity : Activity() {
 
     companion object {
         private const val SYSFS_UI_REFRESH_MS = 15_000L
+        private const val PENDING_EXPORT_NAME = "pending_export_name"
         private const val CSV_EXPORT_REQUEST_CODE = 5101
         private const val NOTIFICATION_REQUEST_CODE = 5102
     }
