@@ -1,5 +1,11 @@
 # BatteryScope — device-wide telemetry architecture and capability audit
 
+## 2026-11-25 — Bounded public resource inventory (R19 partial)
+
+- Extend low-cadence resource snapshots with display state and current mode configuration, storage volume state/type (no labels/UUIDs/paths), sensor descriptors (max 64, explicit truncation), ABI list, time-zone offset and acquisition completion timestamps. Descriptors are not live sensor measurements. Display configurations are not panel power.
+- Add only normal ACCESS_NETWORK_STATE permission for OS-reported active network transport/validation/metering snapshot. No INTERNET permission, active probes, SSID/BSSID, IP addresses, payload capture, persistent identifiers or sensor listeners. Connectivity snapshot can go stale immediately; event callbacks and Android system-history import are still pending.
+- Add disposable Android integration test for section statuses, acquisition timing, descriptor bounds and permission boundary. Full device census, per-app aggregate imports, capability ledger, storage overhead and real-device verification remain open. Additional descriptor storage requires measurement; no schema or backup format change, history deletion, signing or version change.
+
 ## 2026-11-25 — Resource history summary
 
 Added 24-hour resource-history summary from stored acquisition timestamps: observed RAM range, minimum available internal storage, peak Android thermal status, and per-counter network bytes over valid intervals with explicit time coverage. Excludes repeated cached snapshots, unknown boot identity, resets, wall-clock discontinuities and gaps over five minutes. Historical device samples prior to this collector remain readable and are excluded as unavailable; no synthetic backfill or schema change. CI pending.

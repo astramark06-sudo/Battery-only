@@ -1,5 +1,11 @@
 # BatteryScope changelog
 
+## 2026-11-25 — Bounded public resource inventory (R19 partial)
+
+- Extend low-cadence resource snapshots with display state and current mode configuration, storage volume state/type (no labels/UUIDs/paths), sensor descriptors (max 64, explicit truncation), ABI list, time-zone offset and acquisition completion timestamps. Descriptors are not live sensor measurements. Display configurations are not panel power.
+- Add only normal ACCESS_NETWORK_STATE permission for OS-reported active network transport/validation/metering snapshot. No INTERNET permission, active probes, SSID/BSSID, IP addresses, payload capture, persistent identifiers or sensor listeners. Connectivity snapshot can go stale immediately; event callbacks and Android system-history import are still pending.
+- Add disposable Android integration test for section statuses, acquisition timing, descriptor bounds and permission boundary. Full device census, per-app aggregate imports, capability ledger, storage overhead and real-device verification remain open. Additional descriptor storage requires measurement; no schema or backup format change, history deletion, signing or version change.
+
 ## 2026-11-25 — Raw broadcast metadata and six resource history windows (R29/R33 partial)
 
 - Preserve allowlisted integer/boolean/string battery broadcast extras, absent/wrong-type distinction and battery property status per sample in existing power_supply_json under @battery_raw_v1 and related metadata. Retain zero/negative voltage as raw evidence and signed in-range temperature. No arbitrary broadcast serialization. Read timestamp denotes app acquisition, not sensor timestamp. Missing prior raw fields cannot be reconstructed; property sentinel values still represented by status. Existing schema/CSV/portable format unchanged.
