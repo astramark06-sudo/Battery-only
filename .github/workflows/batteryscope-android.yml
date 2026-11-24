@@ -2,7 +2,7 @@ name: BatteryScope Android
 
 on:
   push:
-    branches: [batteryscope]
+    branches: [main]
     paths:
       - "BatteryScope/app/**"
       - "BatteryScope/build.gradle.kts"
