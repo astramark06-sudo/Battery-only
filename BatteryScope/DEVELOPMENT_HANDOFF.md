@@ -1,5 +1,10 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Kernel scan enumeration and cooperative budget (R26 partial)
+
+- Stream directory entries with DirectoryStream instead of unbounded listFiles/sort; stop before fetching the next entry when budgets expire. Preserve read-only allowlist, canonical sysfs restriction and cycle checks. Each root gets a share of remaining field/entry budget (power supply weighted 3), unused capacity flows to later roots. Add cooperative two-second total work budget and explicit per-root scan/truncation/elapsed metadata. No hard timeout guarantee for a blocking kernel syscall. Remove buffered prefetch from bounded attribute reads.
+- New JVM regression checks short-circuit enumeration, full enumeration and zero admitted entries on a disposable directory. Android/device timing and blocking-read behavior still require validation. Inventory traversal order is filesystem order (not sorted), so bounded results can vary; absence is not proof of unsupported fields. No writes to hardware, new permission, schema or history change.
+
 ## 2026-11-25 — Cumulative CI failure recovery
 
 - Run 45481677171 compiled and passed JVM tests but failed lint on the existing PACKAGE_USAGE_STATS declaration and two of 17 emulator tests. Verified downloaded instrumentation ZIP SHA-256 5e7fd1a64e01247b1989ac4f9849b9d47f66e3c31dea46f8f407ba768ef1cc0d; exact failing lines 150 and 328. Corrected the outdated epoch-time assertion. Resource filtering no longer assumes a particular JSON slash escaping; parse keys instead of SQL text matching. Gauge selection skips metadata-only rows and malformed JSON. Added narrow documented lint suppression on the special access declaration only; lint remains enabled. New cumulative CI required. Full JSON scan cost remains an open performance concern.

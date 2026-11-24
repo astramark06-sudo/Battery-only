@@ -18,6 +18,20 @@ class KernelInventoryTest {
         assertFalse(KernelInventory.inSysfs("/system"))
         assertTrue(KernelInventory.inSysfs("/sys/devices/abc"))
     }
+    @Test fun directoryEnumerationStopsAtBudgetAndClosesStream() {
+        val dir = java.nio.file.Files.createTempDirectory("inventory-entries").toFile()
+        try {
+            repeat(200) { File(dir,"entry-" + it).writeText("test") }
+            var visited = 0
+            assertFalse(KernelInventory.visitEntries(dir,{ visited < 7 }) { visited++ })
+            assertEquals(7,visited)
+            visited = 0
+            assertTrue(KernelInventory.visitEntries(dir,{ true }) { visited++ })
+            assertEquals(200,visited)
+            assertFalse(KernelInventory.visitEntries(dir,{ false }) { error("No visit permitted") })
+        } finally { dir.deleteRecursively() }
+    }
+
     @Test fun readIsBoundedAndDashboardKeepsGaugeKeys() {
         val f = File.createTempFile("inventory",".txt")
         try {

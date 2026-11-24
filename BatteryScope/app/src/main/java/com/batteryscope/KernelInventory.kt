@@ -1,6 +1,7 @@
 package com.batteryscope
 
 import java.io.File
+import java.nio.file.Files
 
 /** Bounded, allowlisted, ordinary-UID read-only inventory. No control commands or writes. */
 internal object KernelInventory {
@@ -54,7 +55,7 @@ internal object KernelInventory {
     /** Read at most a bounded prefix, never an unbounded line or binary descriptor. */
     internal fun readPrefix(file: File): String = try {
         if (!file.canRead()) "READ_DENIED"
-        else file.inputStream().buffered().use { input ->
+        else file.inputStream().use { input ->
             val bytes = ByteArray(241)
             var count = 0
             while (count < bytes.size) {
@@ -69,17 +70,33 @@ internal object KernelInventory {
         }
     } catch (e: Exception) { "ERROR:" + e.javaClass.simpleName }
 
-    fun scan(maxFields: Int = 900, maxEntries: Int = 6000): Map<String,String> {
-        require(maxFields > 0 && maxEntries > 0)
+    /** Stream directory entries without allocating or sorting the entire listing.
+     * The callback may stop enumeration before the next entry. All streams close on exit.
+     */
+    internal fun visitEntries(dir: File, shouldContinue: () -> Boolean, visit: (File) -> Unit): Boolean {
+        Files.newDirectoryStream(dir.toPath()).use { stream ->
+            val iterator = stream.iterator()
+            while (shouldContinue()) {
+                if (!iterator.hasNext()) return true
+                visit(iterator.next().toFile())
+            }
+            return false
+        }
+    }
+
+    fun scan(maxFields: Int = 900, maxEntries: Int = 6000, maxWorkMs: Long = 2_000L): Map<String,String> {
+        require(maxFields > 0 && maxEntries > 0 && maxWorkMs in 1L..60_000L)
         val result = linkedMapOf<String,String>()
+        val started = System.nanoTime()
+        fun expired() = System.nanoTime() - started >= maxWorkMs * 1_000_000L
         var count = 0
         var entries = 0
         var capped = false
         var visible = 0
-        for (spec in roots) {
+        for ((index, spec) in roots.withIndex()) {
             val root = File(spec.path)
-            if (count >= maxFields || entries >= maxEntries) {
-                result[spec.name + "/@root"] = "NOT_SCANNED_LIMIT"
+            if (expired() || count >= maxFields || entries >= maxEntries) {
+                result[spec.name + "/@root"] = if (expired()) "NOT_SCANNED_TIME_BUDGET" else "NOT_SCANNED_LIMIT"
                 capped = true
                 continue
             }
@@ -87,42 +104,65 @@ internal object KernelInventory {
                 result[spec.name + "/@root"] = "ABSENT_OR_HIDDEN_BY_SELINUX"
                 continue
             }
+            // Reserve capacity for subsequent roots. Power supplies get triple weight;
+            // unused budget flows to the remaining roots. The total caps still apply.
+            val weight = if (index == 0) 3 else 1
+            val shares = roots.size - index + weight - 1
+            val rootFieldEnd = count + ((maxFields - count).toLong() * weight / shares).toInt().coerceAtLeast(1)
+            val rootEntryEnd = entries + ((maxEntries - entries).toLong() * weight / shares).toInt().coerceAtLeast(1)
             val seen = mutableSetOf<String>()
+            var rootLimited = false
+            var listingFailed = false
+            fun available() = !expired() && count < minOf(maxFields,rootFieldEnd) &&
+                entries < minOf(maxEntries,rootEntryEnd)
             fun walk(dir: File, depth: Int) {
-                if (depth > spec.depth || capped) return
+                if (depth > spec.depth || !available()) return
                 val canonical = try { dir.canonicalPath } catch (_: Exception) { return }
                 if (!inSysfs(canonical) || !seen.add(canonical)) return
-                val children = try { dir.listFiles()?.sortedBy { it.name } } catch (_: Exception) { null }
                 val relative = dir.path.removePrefix(root.path).trim('/')
-                if (children == null) {
-                    result[spec.name + "/" + (if (relative.isEmpty()) "@root" else "$relative/@list")] = "LIST_DENIED"
-                    return
-                }
-                if (depth == 0) {
-                    result[spec.name + "/@root"] = "VISIBLE"
-                    visible++
-                }
-                for (child in children) {
-                    if (++entries > maxEntries || count >= maxFields) { capped = true; break }
-                    if (child.isDirectory) {
-                        if (allowedDirectory(child.name)) walk(child,depth+1)
-                    } else if (allowed(spec.name,child.name) && child.isFile) {
-                        val resolved = try { child.canonicalPath } catch (_: Exception) { continue }
-                        if (!inSysfs(resolved)) continue
-                        val path = child.path.removePrefix(root.path).trim('/')
-                        result[spec.name + "/" + path] = readPrefix(child)
-                        count++
+                try {
+                    val complete = visitEntries(dir, ::available) { child ->
+                        entries++
+                        if (child.isDirectory) {
+                            if (allowedDirectory(child.name)) walk(child,depth+1)
+                        } else if (allowed(spec.name,child.name) && child.isFile) {
+                            val resolved = try { child.canonicalPath } catch (_: Exception) { null }
+                            if (resolved != null && inSysfs(resolved) && !expired()) {
+                                val path = child.path.removePrefix(root.path).trim('/')
+                                result[spec.name + "/" + path] = readPrefix(child)
+                                count++
+                            }
+                        }
                     }
+                    if (!complete) rootLimited = true
+                    if (depth == 0) {
+                        result[spec.name + "/@root"] = "VISIBLE"
+                        visible++
+                    }
+                } catch (e: Exception) {
+                    listingFailed = true
+                    result[spec.name + "/" + (if (relative.isEmpty()) "@root" else "$relative/@list")] =
+                        "LIST_ERROR:" + e.javaClass.simpleName
                 }
             }
             walk(root,0)
+            if (rootLimited || !available()) {
+                capped = true
+                result[spec.name + "/@scan"] = if (expired()) "TIME_BUDGET_REACHED" else "ROOT_BUDGET_REACHED"
+            } else result[spec.name + "/@scan"] = if (listingFailed) "PARTIAL_LIST_ERROR" else "FINISHED"
+            if (!result.containsKey(spec.name + "/@root")) result[spec.name + "/@root"] = "NOT_ENUMERATED"
         }
         result["@field_count"] = count.toString()
         result["@field_limit"] = maxFields.toString()
-        result["@field_limit_reached"] = (capped || count >= maxFields).toString()
+        result["@field_limit_reached"] = (count >= maxFields).toString()
+        result["@scan_truncated"] = capped.toString()
         result["@entries_examined"] = entries.toString()
+        result["@entry_limit"] = maxEntries.toString()
         result["@visible_roots"] = visible.toString()
-        result["@inventory_policy"] = "ALLOWLIST_V1"
+        result["@scan_work_ms"] = ((System.nanoTime() - started) / 1_000_000L).toString()
+        result["@scan_time_budget_ms"] = maxWorkMs.toString()
+        result["@scan_time_budget_reached"] = expired().toString()
+        result["@inventory_policy"] = "ALLOWLIST_V2"
         return result
     }
 
