@@ -526,8 +526,8 @@ class BatteryRecorderService : Service() {
 }
 
 /** SQLite keeps raw samples/events until the user deletes app data. */
-class RecorderDatabase(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, "batteryscope_history.db", null, RecorderSchema.VERSION) {
+class RecorderDatabase(context: Context, databaseName: String = "batteryscope_history.db") :
+    SQLiteOpenHelper(context.applicationContext, databaseName, null, RecorderSchema.VERSION) {
 
     override fun onCreate(db: SQLiteDatabase) = RecorderSchema.create { sql -> db.execSQL(sql) }
 
@@ -1192,8 +1192,14 @@ class RecorderDatabase(context: Context) :
             arrayOf(range.minId.toString(), range.maxId.toString()))
     }
 
-    private fun backupRows(cursor: Cursor, size: Int): Sequence<List<String?>> = sequence {
-        while (cursor.moveToNext()) yield((0 until size).map { i -> if (cursor.isNull(i)) null else cursor.getString(i) })
+    private fun backupRows(cursor: Cursor, columns: List<HistoryBackup.Column>): Sequence<List<String?>> = sequence {
+        while (cursor.moveToNext()) yield(columns.mapIndexed { i, column ->
+            if (cursor.isNull(i)) null else when (column.type) {
+                HistoryBackup.Type.INTEGER -> cursor.getLong(i).toString()
+                HistoryBackup.Type.REAL -> cursor.getDouble(i).toString()
+                HistoryBackup.Type.TEXT -> cursor.getString(i)
+            }
+        })
     }
 
     internal fun exportBackup(output: OutputStream): HistoryBackup.Counts {
@@ -1203,7 +1209,7 @@ class RecorderDatabase(context: Context) :
         snapshotCursor(db,"samples",snap.samples,HistoryBackup.sampleColumns).use { samples ->
             snapshotCursor(db,"events",snap.events,HistoryBackup.eventColumns).use { events ->
                 HistoryBackup.write(output, counts,
-                    backupRows(samples,HistoryBackup.sampleColumns.size), backupRows(events,HistoryBackup.eventColumns.size))
+                    backupRows(samples,HistoryBackup.sampleColumns), backupRows(events,HistoryBackup.eventColumns))
             }
         }
         return counts

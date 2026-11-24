@@ -38,7 +38,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-started continuous local battery, charging, discharging and foreground-app telemetry recording with an ongoing notification" />
+                android:value="Automatically resumed, user-visible local battery and device telemetry recording with an ongoing notification" />
         </service>
     </application>
 </manifest>
