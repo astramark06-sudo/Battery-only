@@ -51,6 +51,40 @@ class HistoryBackupTest {
         }.isFailure)
     }
 
+    @Test fun importRejectsInvalidNormalizedValuesButPreservesRawEvidence() {
+        fun changed(name: String, value: String): List<String?> = sample().toMutableList().apply {
+            this[HistoryBackup.sampleColumns.indexOfFirst { it.name == name }] = value
+        }
+        for ((name, value) in listOf("battery_percent" to "999", "screen_on" to "2",
+            "elapsed_realtime_ms" to "-1", "boot_count" to "2147483648",
+            "battery_status" to "UNKNOWN_CUSTOM", "plug_type" to "OTHER_0",
+            "usage_access" to "-1", "battery_present" to "3")) {
+            val bytes = ByteArrayOutputStream().also {
+                HistoryBackup.write(it, HistoryBackup.Counts(1,0), sequenceOf(changed(name,value)), emptySequence())
+            }.toByteArray()
+            var imported = false
+            assertTrue(name, runCatching {
+                HistoryBackup.read(ByteArrayInputStream(bytes), {}, { imported = true }, {})
+            }.isFailure)
+            assertFalse(name, imported)
+        }
+        for ((name,value) in listOf("battery_current_ua" to "-2147483648", "battery_voltage_mv" to "3",
+            "charge_counter_uah" to "-100", "temperature_c" to "-4.5", "plug_type" to "OTHER_16")) {
+            HistoryBackup.validateImportedRow(HistoryBackup.sampleColumns, changed(name,value))
+        }
+    }
+
+    @Test fun rejectsCombinedOversizeImportRow() {
+        val row = sample().toMutableList().apply {
+            this[HistoryBackup.sampleColumns.indexOfFirst { it.name == "technology" }] = "a".repeat(600_000)
+            this[HistoryBackup.sampleColumns.indexOfFirst { it.name == "power_supply_json" }] = "b".repeat(600_000)
+        }
+        val bytes = ByteArrayOutputStream().also {
+            HistoryBackup.write(it, HistoryBackup.Counts(1,0), sequenceOf(row), emptySequence())
+        }.toByteArray()
+        assertTrue(runCatching { HistoryBackup.read(ByteArrayInputStream(bytes), {}, {}, {}) }.isFailure)
+    }
+
     @Test fun restoreIdsPrecedeLocalRowsAndOverlapIsRejected() {
         assertEquals(1L, HistoryBackup.firstImportedId(null, 2))
         assertEquals(-1L, HistoryBackup.firstImportedId(1, 2))

@@ -24,7 +24,7 @@ internal object LegacyHistoryCsv {
                 if (column.required) require(!raw.isEmpty()) { "Required CSV field missing: " + column.name }
                 HistoryBackup.validateValue(column, value)
                 value
-            }
+            }.also { HistoryBackup.validateImportedRow(columns, it) }
         var samples = 0L
         var events = 0L
         while (true) {
@@ -52,6 +52,7 @@ internal object LegacyHistoryCsv {
         if (first == -1) return null
         input.unread(first)
         val fields = mutableListOf<String>()
+        var rowChars = 0L
         while (true) {
             require(fields.size < RecorderCsv.header.size) { "Too many CSV fields" }
             require(input.read() == '"'.code) { "Original BatteryScope CSV fields must be quoted" }
@@ -66,6 +67,7 @@ internal object LegacyHistoryCsv {
                     if (next != '"'.code) break
                 }
                 require(field.length < MAX_FIELD_CHARS) { "CSV field exceeds size limit" }
+                require(++rowChars <= HistoryBackup.MAX_IMPORT_ROW_BYTES) { "CSV row exceeds safe size limit" }
                 field.append(c.toChar())
             }
             fields += field.toString()

@@ -36,6 +36,19 @@ class LegacyHistoryCsvTest {
         }
     }
 
+    @Test fun rejectsSemanticallyInvalidCsvBeforeConsumer() {
+        val header = RecorderCsv.encodeRow(RecorderCsv.header)
+        for ((name,value) in listOf("battery_percent" to "101", "screen_on" to "2",
+            "boot_count" to "2147483648", "plug_type" to "OTHER_0")) {
+            val row = sample().toMutableList().apply { this[RecorderCsv.header.indexOf(name)] = value }
+            var imported = false
+            assertTrue(name, runCatching {
+                LegacyHistoryCsv.scan((header + RecorderCsv.encodeRow(row)).reader(), { imported = true }, {})
+            }.isFailure)
+            assertFalse(imported)
+        }
+    }
+
     @Test fun acceptsBomAndCrLf() {
         val text = "\uFEFF" + (RecorderCsv.encodeRow(RecorderCsv.header) + RecorderCsv.encodeRow(sample())).replace("\n","\r\n")
         assertEquals(HistoryBackup.Counts(1,0),LegacyHistoryCsv.scan(text.reader(),{},{}))

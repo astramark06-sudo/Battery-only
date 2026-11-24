@@ -1326,12 +1326,31 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
     internal fun restoreBackup(input: InputStream): HistoryBackup.Counts =
         restoreHistory { header, sample, event -> HistoryBackup.read(input, header, sample, event) }
 
+    /** Verify a private staged backup completely before acquiring the database write transaction.
+     * The second pass independently verifies checksum and values before commit.
+     */
+    internal fun restoreBackup(file: File): HistoryBackup.Counts {
+        val expected = file.inputStream().use { HistoryBackup.read(it, {}, {}, {}) }
+        require(expected.total > 0L) { "Backup has no history" }
+        return restoreHistory { header, sample, event ->
+            file.inputStream().use { input ->
+                HistoryBackup.read(input, { counts ->
+                    check(counts == expected) { "Backup counts changed after validation" }
+                    header(counts)
+                }, sample, event)
+            }
+        }
+    }
+
+    private fun strictUtf8Reader(file: File) =
+        java.io.InputStreamReader(file.inputStream(), Charsets.UTF_8.newDecoder())
+
     /** Validate and count staged legacy CSV before the database transaction. */
     internal fun restoreLegacyCsv(file: File): HistoryBackup.Counts {
-        val expected = file.reader(Charsets.UTF_8).use { LegacyHistoryCsv.scan(it, {}, {}) }
+        val expected = strictUtf8Reader(file).use { LegacyHistoryCsv.scan(it, {}, {}) }
         return restoreHistory { header, sample, event ->
             header(expected)
-            val actual = file.reader(Charsets.UTF_8).use { LegacyHistoryCsv.scan(it, sample, event) }
+            val actual = strictUtf8Reader(file).use { LegacyHistoryCsv.scan(it, sample, event) }
             check(actual == expected) { "CSV record count changed" }
             actual
         }

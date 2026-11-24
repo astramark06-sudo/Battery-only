@@ -13,6 +13,9 @@ internal object HistoryBackup {
     const val MAX_BYTES = 1_073_741_824L
     private const val MAX_ROWS = 10_000_000L
     private const val MAX_FIELD_BYTES = 1_048_576
+    internal const val MAX_IMPORT_ROW_BYTES = 1_048_576L
+    private val batteryStates = setOf("UNKNOWN", "CHARGING", "DISCHARGING", "FULL", "NOT_CHARGING")
+    private val plugStates = setOf("UNKNOWN", "NONE", "AC", "USB", "WIRELESS", "DOCK")
     private const val MAGIC = "BatteryScopeHistory"
     private const val VERSION = 1
 
@@ -48,6 +51,36 @@ internal object HistoryBackup {
             Type.INTEGER -> require(value.toLongOrNull() != null) { "Invalid integer: ${column.name}" }
             Type.REAL -> require(value.toDoubleOrNull()?.isFinite() == true) { "Invalid real: ${column.name}" }
             Type.TEXT -> Unit
+        }
+    }
+
+    /**
+     * Imports must not introduce invalid normalized state or values that narrow
+     * incorrectly in analytics. Raw vendor/current/voltage/counter fields retain
+     * their original signed values: measurement quality is assessed separately.
+     */
+    internal fun validateImportedRow(columns: List<Column>, row: List<String?>) {
+        require(columns.size == row.size) { "Import row column mismatch" }
+        var bytes = 0L
+        columns.zip(row).forEach { (column, value) ->
+            validateValue(column, value)
+            bytes += 4L + (value?.toByteArray(Charsets.UTF_8)?.size ?: 0)
+            require(bytes <= MAX_IMPORT_ROW_BYTES) { "Import row exceeds safe size limit" }
+            if (value != null) {
+                val valid = when (column.name) {
+                    "timestamp_ms", "elapsed_realtime_ms" -> value.toLong() >= 0L
+                    "boot_count", "battery_cycle_count" -> value.toLong() in 0L..Int.MAX_VALUE.toLong()
+                    "invalid_charger_state" -> value.toLong() in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong()
+                    "battery_percent" -> value.toLong() in 0L..100L
+                    "screen_on", "usage_access", "battery_present" -> value.toLong() in 0L..1L
+                    "battery_status" -> value in batteryStates
+                    "plug_type" -> value in plugStates ||
+                        (value.startsWith("OTHER_") && (value.removePrefix("OTHER_").toIntOrNull() ?: 0) > 0)
+                    "event_type" -> value.isNotBlank()
+                    else -> true
+                }
+                require(valid) { "Invalid normalized import field: " + column.name }
+            }
         }
     }
 
@@ -107,9 +140,12 @@ internal object HistoryBackup {
         fun rows(count: Long, columns: List<Column>, consumer: (List<String?>) -> Unit) {
             var remaining = count
             while (remaining > 0L) {
+                var rowBytes = 0L
                 val row = columns.map { column ->
                     val size = data.readInt()
                     budget.field(size)
+                    rowBytes += 4L + size.coerceAtLeast(0)
+                    require(rowBytes <= MAX_IMPORT_ROW_BYTES) { "Import row exceeds safe size limit" }
                     val value = if (size == -1) null else {
                         val bytes = ByteArray(size)
                         data.readFully(bytes)
@@ -118,6 +154,7 @@ internal object HistoryBackup {
                     validateValue(column, value)
                     value
                 }
+                validateImportedRow(columns, row)
                 consumer(row)
                 remaining--
             }
@@ -138,6 +175,7 @@ internal object HistoryBackup {
         while (true) {
             val count = input.read(bytes)
             if (count < 0) break
+            require(count > 0) { "Backup input stream made no progress" }
             size += count
             require(size <= MAX_BYTES) { "Backup exceeds supported size" }
             output.write(bytes, 0, count)

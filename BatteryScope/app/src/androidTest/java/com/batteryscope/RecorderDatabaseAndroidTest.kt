@@ -87,6 +87,36 @@ class RecorderDatabaseAndroidTest {
         }
     }
 
+    @Test fun stagedBackupPrevalidationAndSecondPassPreserveExistingRows() = database { source ->
+        sample(source,1000)
+        val valid = backup(source)
+        val file = File.createTempFile("backup-test",".bsh",context.cacheDir)
+        try {
+            database { target ->
+                sample(target,5000)
+                val before = backup(target)
+                file.writeBytes(valid.copyOf().apply { this[lastIndex] = (this[lastIndex].toInt() xor 1).toByte() })
+                assertTrue(runCatching { target.restoreBackup(file) }.isFailure)
+                assertArrayEquals(before,backup(target))
+                file.writeBytes(valid)
+                assertEquals(HistoryBackup.Counts(1,0),target.restoreBackup(file))
+                assertEquals(2L,number(target.readableDatabase,"SELECT COUNT(*) FROM samples"))
+            }
+        } finally { file.delete() }
+    }
+
+    @Test fun invalidNormalizedBackupRollsBackEarlierValidRow() = database { source ->
+        sample(source,1000)
+        sample(source,2000,percent=999)
+        val invalid = backup(source)
+        database { target ->
+            sample(target,5000)
+            val before = backup(target)
+            assertTrue(runCatching { target.restoreBackup(ByteArrayInputStream(invalid)) }.isFailure)
+            assertArrayEquals(before,backup(target))
+        }
+    }
+
     @Test fun legacyCsvRoundTripAndEmptyExport() = database { source ->
         val empty = StringWriter()
         assertEquals(0L,source.exportCsv(empty))

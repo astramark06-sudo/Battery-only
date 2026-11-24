@@ -885,9 +885,14 @@ class MainActivity : Activity() {
                 staging = file
                 val input = app.contentResolver.openInputStream(uri) ?: error("Cannot read selected backup")
                 input.use { source -> file.outputStream().use { HistoryBackup.stage(source,it) } }
+                // Conservative estimate, not a guarantee: SQLite pages, indexes and journal
+                // can exceed the staged file size. Never delete existing history to make room.
+                val free = app.filesDir.usableSpace
+                val estimatedRequired = 2L * file.length() + 16L * 1024 * 1024
+                require(free >= estimatedRequired) { "Insufficient free internal storage for a safe restore attempt (estimated requirement " + estimatedRequired + " bytes)" }
                 val database = RecorderDatabase(app)
                 val result = try {
-                    if (legacy) database.restoreLegacyCsv(file) else file.inputStream().use { database.restoreBackup(it) }
+                    if (legacy) database.restoreLegacyCsv(file) else database.restoreBackup(file)
                 } finally { database.close() }
                 "Restored ${result.samples} samples and ${result.events} events. Existing records preserved."
             } catch (t: Throwable) {
