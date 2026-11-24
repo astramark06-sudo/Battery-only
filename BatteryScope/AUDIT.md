@@ -1,5 +1,9 @@
 # BatteryScope 1.15 — Measurement and implementation audit
 
+## 2026-11-24 — Recorder interval integrity (proposed)
+
+History analytics exclude intervals outside 1–90 seconds and intervals spanning a known reboot; unknown boot counts retain best-effort timing. Foreground-app correlation requires matching nonblank packages and interactive displays at both endpoints. Recent charging sessions no longer absorb a preceding FULL idle segment. Raw history, app identity and schema are unchanged. New JVM regression tests added; CI and physical-device validation pending.
+
 Audit date: 2026-11-23  
 Branch: `batteryscope`  
 Target: Realme Narzo 20 Pro (RMX2161), Android 12, non-rooted

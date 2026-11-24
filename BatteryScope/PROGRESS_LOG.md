@@ -1,5 +1,9 @@
 # BatteryScope persistent progress log
 
+## 2026-11-24 — Recorder interval integrity (proposed)
+
+History analytics exclude intervals outside 1–90 seconds and intervals spanning a known reboot; unknown boot counts retain best-effort timing. Foreground-app correlation requires matching nonblank packages and interactive displays at both endpoints. Recent charging sessions no longer absorb a preceding FULL idle segment. Raw history, app identity and schema are unchanged. New JVM regression tests added; CI and physical-device validation pending.
+
 This file is the durable checkpoint for resuming work in a new chat.
 
 ## 2026-11-23 — Comprehensive telemetry milestone (source version 1.14)

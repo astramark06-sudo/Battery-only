@@ -1,5 +1,9 @@
 # BatteryScope changelog
 
+## 2026-11-24 — Recorder interval integrity (proposed)
+
+History analytics exclude intervals outside 1–90 seconds and intervals spanning a known reboot; unknown boot counts retain best-effort timing. Foreground-app correlation requires matching nonblank packages and interactive displays at both endpoints. Recent charging sessions no longer absorb a preceding FULL idle segment. Raw history, app identity and schema are unchanged. New JVM regression tests added; CI and physical-device validation pending.
+
 ## Unreleased — automatic monitoring and device-wide telemetry foundation
 - Added a device-wide telemetry architecture and Android capability audit covering UsageStatsManager, NetworkStatsManager, StorageStatsManager, PowerManager thermal APIs, ActivityManager memory information, SensorManager inventory and best-effort kernel sources.
 - Documented privileged BatteryStats limits, app-usage event retention, per-UID network semantics, and the requirement for an RMX2161 on-device capability census.

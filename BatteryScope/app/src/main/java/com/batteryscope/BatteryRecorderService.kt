@@ -778,7 +778,7 @@ class RecorderDatabase(context: Context) :
             appendLine("=== RECENT DISCHARGING SESSIONS (LAST 30 DAYS) ===")
             appendLine(sessionHistoryReport(recentRows, false, 8))
             appendLine()
-            appendLine("Rate intervals longer than 90 seconds are excluded. Threshold times are resolved to the sample interval, not exact hardware event times.")
+            appendLine("Rate intervals outside 1–90 seconds and known reboot boundaries are excluded. Threshold times are resolved to the sample interval, not exact hardware event times.")
             val last = readableDatabase.rawQuery(
                 "SELECT timestamp_ms,battery_percent,battery_status,plug_type,foreground_package FROM samples ORDER BY timestamp_ms DESC LIMIT 1", null
             ).use { cursor ->
@@ -892,6 +892,9 @@ class RecorderDatabase(context: Context) :
             after.time, after.elapsed, after.bootCount
         )
 
+    private fun isRateInterval(before: Row, after: Row, interval: Long): Boolean =
+        RecorderTimeMath.isRateInterval(interval, before.bootCount, after.bootCount)
+
     private fun observedDurationMs(rows: List<Row>): Long {
         var total = 0L
         for (i in 1 until rows.size) {
@@ -960,8 +963,8 @@ class RecorderDatabase(context: Context) :
                 val before = previous
                 if (before != null) {
                     val dt = sampleIntervalMs(before, after)
-                    if (dt in 1_000L..(BatteryRecorderService.SAMPLE_INTERVAL_MS * 3)) {
-                        val sameApp = after.screen && after.app.isNotBlank() && after.app == before.app
+                    if (isRateInterval(before, after, dt)) {
+                        val sameApp = RecorderTimeMath.sameForegroundApp(before.screen, after.screen, before.app, after.app)
                         if (sameApp) appTime[after.app] = (appTime[after.app] ?: 0L) + dt
                         if (before.pct != null && after.pct != null) {
                             val delta = (after.pct - before.pct).toDouble()
@@ -1042,7 +1045,7 @@ class RecorderDatabase(context: Context) :
             if (matches(row)) {
                 if (current.isNotEmpty()) {
                     val gap = sampleIntervalMs(current.last(), row)
-                    if (gap !in 1_000L..(BatteryRecorderService.SAMPLE_INTERVAL_MS * 3)) {
+                    if (!isRateInterval(current.last(), row, gap)) {
                         sessions += current
                         current = mutableListOf()
                     }
@@ -1051,7 +1054,7 @@ class RecorderDatabase(context: Context) :
             } else if (firstFull) {
                 if (current.isNotEmpty()) {
                     val gap = sampleIntervalMs(current.last(), row)
-                    if (gap in 1_000L..(BatteryRecorderService.SAMPLE_INTERVAL_MS * 3)) current += row
+                    if (isRateInterval(current.last(), row, gap)) current += row
                     sessions += current
                     current = mutableListOf()
                 }
@@ -1075,7 +1078,7 @@ class RecorderDatabase(context: Context) :
                 val rate = if (elapsed > 0L) kotlin.math.abs(delta.toDouble()) / (elapsed / 3_600_000.0) else 0.0
                 val onMs = run.zipWithNext().sumOf { (a, b) ->
                     val dt = sampleIntervalMs(a, b)
-                    if (dt in 1_000L..(BatteryRecorderService.SAMPLE_INTERVAL_MS * 3) && b.screen) dt else 0L
+                    if (isRateInterval(a, b, dt) && b.screen) dt else 0L
                 }
                 val counter = if (first.chargeCounter != null && last.chargeCounter != null)
                     (last.chargeCounter - first.chargeCounter) / 1000.0 else null
@@ -1102,14 +1105,13 @@ class RecorderDatabase(context: Context) :
             val next = rows[end + 1]
             val gap = sampleIntervalMs(rows[end], next)
             if (next.state == "FULL" && next.plug != "NONE" &&
-                gap in 1_000L..(BatteryRecorderService.SAMPLE_INTERVAL_MS * 3)) end++
+                isRateInterval(rows[end], next, gap)) end++
         }
         var start = end
         while (start > 0) {
             val gap = sampleIntervalMs(rows[start - 1], rows[start])
             val prev = rows[start - 1]
-            val prevMatches = matches(prev) || (wantCharge && prev.state == "FULL" && prev.plug != "NONE")
-            if (!prevMatches || gap !in 1_000L..(BatteryRecorderService.SAMPLE_INTERVAL_MS * 3)) break
+            if (!matches(prev) || !isRateInterval(prev, rows[start], gap)) break
             start--
         }
         val run = rows.subList(start, end + 1)
@@ -1133,7 +1135,7 @@ class RecorderDatabase(context: Context) :
         var offCounterIntervals = 0
         for ((before, after) in run.zipWithNext()) {
             val dt = sampleIntervalMs(before, after)
-            if (dt !in 1_000L..(BatteryRecorderService.SAMPLE_INTERVAL_MS * 3)) continue
+            if (!isRateInterval(before, after, dt)) continue
             val screenBucketOn = after.screen
             if (screenBucketOn) onMs += dt else offMs += dt
             val deltaSoc = if (before.pct != null && after.pct != null) after.pct - before.pct else null
