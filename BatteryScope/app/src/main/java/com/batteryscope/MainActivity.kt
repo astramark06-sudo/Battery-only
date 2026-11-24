@@ -792,7 +792,7 @@ class MainActivity : Activity() {
         val names = HistoryOperations.state.ready
         if (names.isEmpty()) {
             statusText.text = "No prepared exports. Prepare a CSV or backup first."
-            HistoryOperations.discover(applicationContext)
+            HistoryOperations.discover(applicationContext, force = true)
             return
         }
         AlertDialog.Builder(this)
@@ -818,7 +818,7 @@ class MainActivity : Activity() {
         if (historyBusy()) return
         if (!HistoryTransfer.isReadyName(name) || name !in HistoryOperations.state.ready) {
             statusText.text = "Prepared export unavailable. Refresh the prepared-file list."
-            HistoryOperations.discover(applicationContext)
+            HistoryOperations.discover(applicationContext, force = true)
             return
         }
         pendingExportName = name

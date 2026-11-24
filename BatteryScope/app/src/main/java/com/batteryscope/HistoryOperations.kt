@@ -17,6 +17,7 @@ internal object HistoryOperations {
     private data class Result(val message: String, val restored: Boolean = false)
     @Volatile var state = State()
         private set
+    private var discovered = false
 
     private fun directory(app: Context) = File(app.filesDir, "exports")
     private fun scan(app: Context): List<String> =
@@ -38,6 +39,7 @@ internal object HistoryOperations {
                     val ready = try { scan(context) } catch (_: Exception) { state.ready }
                     synchronized(this) {
                         state = State(false, result.message, ready, state.restoreRevision + if (result.restored) 1L else 0L)
+                        discovered = true
                     }
                 }
             }, "BatteryScopeHistoryOperation").start()
@@ -48,8 +50,12 @@ internal object HistoryOperations {
         }
     }
 
-    fun discover(app: Context): Boolean = start(app, "Checking private prepared copies…") {
-        Result("Prepared copies can be saved, retried or discarded.")
+    @Synchronized fun discover(app: Context, force: Boolean = false): Boolean {
+        if (state.busy || (discovered && !force)) return false
+        val previousMessage = state.message
+        return start(app, "Checking private prepared copies…") {
+            Result(previousMessage)
+        }
     }
 
     private fun readyFile(app: Context, name: String): File {
@@ -88,9 +94,13 @@ internal object HistoryOperations {
     fun save(app: Context, name: String, destination: Uri): Boolean = start(app, "Copying and verifying destination…") { context ->
         val source = readyFile(context, name)
         val resolver = context.contentResolver
-        val expected = source.inputStream().use { input ->
-            val output = resolver.openOutputStream(destination, "wt") ?: error("Cannot open destination")
-            output.use { HistoryTransfer.fingerprint(input, it) }
+        val expected = try {
+            source.inputStream().use { input ->
+                val output = resolver.openOutputStream(destination, "wt") ?: error("Cannot open destination")
+                output.use { HistoryTransfer.fingerprint(input, it) }
+            }
+        } catch (e: Exception) {
+            return@start Result("Destination copy failed: " + e.javaClass.simpleName + ". The destination may be incomplete. Prepared copy retained for retry.")
         }
         val actual = try {
             val input = resolver.openInputStream(destination) ?: error("Destination cannot be read back")
@@ -98,7 +108,7 @@ internal object HistoryOperations {
         } catch (e: Exception) {
             return@start Result("Copy closed, but read-back verification failed: " + e.javaClass.simpleName + ". Prepared copy retained; inspect the destination before relying on it.")
         }
-        HistoryTransfer.requireMatch(expected, actual)
+        if (expected != actual) return@start Result("Destination size or SHA-256 differs. Prepared copy retained; do not rely on the destination.")
         val removed = source.delete()
         Result("Destination verified: " + expected.bytes + " bytes; SHA-256 " + expected.sha256 +
             if (removed) ". Prepared copy removed." else ". Verified, but private prepared copy remains.")
