@@ -49,6 +49,43 @@ class UpdateGateTest(unittest.TestCase):
                 self.assertEqual(gate.file_digest(path),result.apk_sha256)
                 self.assertEqual("verify",run.call_args_list[0].args[0][1])
 
+    def test_release_metadata_rejects_debug_wrong_version_and_internet(self):
+        release = BADGING + "application: label='BatteryScope' icon='icon.png'\n"
+        gate.check_release_badging(release, "1.16")
+        for badging, version in [
+            (release + "application-debuggable\n", "1.16"),
+            (release, "1.17"),
+            (release, ""),
+            (BADGING, "1.16"),
+            (release.replace(" versionName='1.16'", ""), "1.16"),
+            (release + "uses-permission: name='android.permission.INTERNET'\n", "1.16"),
+            (release + "uses-permission-sdk-23: name='android.permission.INTERNET'\n", "1.16"),
+        ]:
+            with self.subTest(badging=badging, version=version):
+                with self.assertRaises(gate.VerificationError):
+                    gate.check_release_badging(badging, version)
+        gate.check_release_badging(release + "uses-permission: name='android.permission.ACCESS_NETWORK_STATE'\n", "1.16")
+
+    def test_release_mode_rejects_same_version_override(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), patch.object(gate,"locate") as locate:
+            result = gate.main(["candidate.apk","--expected-cert",CERT,"--installed-version-code","16",
+                                "--release-version-name","1.16","--allow-same-version"])
+        self.assertEqual(1,result)
+        self.assertIn("same-version",json.loads(out.getvalue())["reason"])
+        locate.assert_not_called()
+
+    def test_release_inspection_checks_candidate_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "candidate.apk"
+            path.write_bytes(b"synthetic fixture")
+            release = BADGING + "application: label='BatteryScope' icon='icon.png'\n"
+            with patch.object(gate,"run_tool",side_effect=[SIGNER,release]):
+                self.assertEqual(CERT,gate.inspect_apk(path,"signer","aapt","1.16").signer_sha256)
+            with patch.object(gate,"run_tool",side_effect=[SIGNER,release + "application-debuggable\n"]):
+                with self.assertRaises(gate.VerificationError):
+                    gate.inspect_apk(path,"signer","aapt","1.16")
+
     def test_cli_fails_closed_when_baseline_not_known(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

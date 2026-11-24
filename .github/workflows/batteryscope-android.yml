@@ -72,9 +72,20 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | tee apk-badging.txt
           grep -q "package: name='com.batteryscope'" apk-badging.txt
           grep -q "versionCode='16'" apk-badging.txt
+          grep -q "versionName='1.15'" apk-badging.txt
+          grep -Fxq "application-debuggable" apk-badging.txt
+          if grep -E "^uses-permission[^:]*:.*android\.permission\.INTERNET" apk-badging.txt; then
+            echo "Unexpected internet permission in local-only APK" >&2
+            exit 1
+          fi
+          echo "Development debug artifact only; not a production update"
           sha256sum "$APK" | tee apk-sha256.txt
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" | tee apk-signing.txt
           stat -c 'APK size: %s bytes' "$APK"
+
+      - name: Android lint
+        working-directory: BatteryScope
+        run: gradle --no-daemon --stacktrace :app:lintDebug
 
       - name: Upload APK and verification reports
         if: always()
@@ -88,6 +99,7 @@ jobs:
             BatteryScope/apk-badging.txt
             BatteryScope/apk-sha256.txt
             BatteryScope/apk-signing.txt
+            BatteryScope/app/build/reports/lint-results-debug.*
           if-no-files-found: warn
           retention-days: 14
 

@@ -18,6 +18,8 @@ Alternatively, if the installed certificate and version code are independently k
 
 Both APKs are inspected using apksigner verify and aapt; the gate checks the package ID, certificate, version code and unchanged candidate file digest. It intentionally rejects unknown signing identity, multiple signers, certificate mismatches, downgrades and same-version release candidates. Same-version comparison is available only with explicit --allow-same-version for development. Certificate rotation/lineage requires separate expert verification.
 
+For a proposed non-debug production update, add `--release-version-name EXPECTED_VERSION`. This additionally requires the exact candidate versionName, application metadata, no debuggable marker and no INTERNET permission. The normal ACCESS_NETWORK_STATE permission is permitted for local transport observation. The same-version override is rejected in release mode. All comparisons still require independently trusted installed identity.
+
 IDENTITY_MATCH_ONLY is not installation, migration, or release approval. Record the exact candidate hash, CI run, migration backup and physical-device validation before release.
 
 ## Signing key custody

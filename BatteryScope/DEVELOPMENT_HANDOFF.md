@@ -1,5 +1,11 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Explicit production metadata gate and Android lint (R36/R37 partial)
+
+- Offline signing preflight accepts optional --release-version-name: exact versionName, application metadata present, debuggable and INTERNET permission rejected, same-version override disallowed. Certificate/version continuity and immutable artifact hash remain mandatory; successful result is still identity match only, not approval.
+- Android development CI additionally checks expected versionName, explicit debug artifact status and absence of INTERNET permission, then runs lintDebug and uploads reports. Three new signing-policy tests include synthetic metadata variants and fail-closed CLI behavior. Actual production APK, independently trusted installed signer/key and real migration are still blocked. No signing secret requested or stored.
+- Pinning/dependency verification, reproducibility and broader Android matrix remain open. CI for cumulative source must pass before a verified checkpoint is claimed.
+
 ## 2026-11-25 — Bounded public resource inventory (R19 partial)
 
 - Extend low-cadence resource snapshots with display state and current mode configuration, storage volume state/type (no labels/UUIDs/paths), sensor descriptors (max 64, explicit truncation), ABI list, time-zone offset and acquisition completion timestamps. Descriptors are not live sensor measurements. Display configurations are not panel power.

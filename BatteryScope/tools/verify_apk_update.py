@@ -46,6 +46,22 @@ def parse_badging(output: str) -> tuple[str, int]:
     return package, int(version)
 
 
+def check_release_badging(output: str, expected_version_name: str) -> None:
+    """Fail closed on missing release metadata, debug markers or network access."""
+    parse_badging(output)
+    lines = output.splitlines()
+    package_line = next(line for line in lines if line.startswith("package: name="))
+    names = re.findall(r"\bversionName='([^']*)'", package_line)
+    if not expected_version_name.strip() or names != [expected_version_name]:
+        raise VerificationError("Release versionName is missing or does not match the expected version")
+    if not any(line.startswith("application:") for line in lines):
+        raise VerificationError("Missing application metadata in release badging")
+    if any(line.strip().startswith("application-debuggable") for line in lines):
+        raise VerificationError("Debuggable APK cannot pass the release gate")
+    if re.search(r"^uses-permission[^:]*:.*['\"]android\.permission\.INTERNET['\"]", output, re.M):
+        raise VerificationError("Unexpected INTERNET permission in local-only release")
+
+
 def parse_signer(output: str) -> str:
     # Do not confuse the APK checksum, key digest or source-stamp digest with the signer.
     matches = re.findall(r"^Signer #([0-9]+) certificate SHA-256 digest:\s*([0-9a-fA-F:]+)\s*$", output, re.M)
@@ -101,14 +117,18 @@ def _stream_hash(file) -> str:
     return md.hexdigest()
 
 
-def inspect_apk(path: Path, signer: str, aapt: str) -> ApkIdentity:
+def inspect_apk(path: Path, signer: str, aapt: str,
+                release_version_name: str | None = None) -> ApkIdentity:
     path = path.resolve(strict=True)
     if not path.is_file() or path.stat().st_size == 0:
         raise VerificationError("APK is missing or empty")
     before = file_digest(path)
     output = run_tool([signer, "verify", "--verbose", "--print-certs", str(path)])
     fingerprint = parse_signer(output)
-    package, code = parse_badging(run_tool([aapt, "dump", "badging", str(path)]))
+    badging = run_tool([aapt, "dump", "badging", str(path)])
+    package, code = parse_badging(badging)
+    if release_version_name is not None:
+        check_release_badging(badging, release_version_name)
     if before != file_digest(path):
         raise VerificationError("APK changed during verification")
     return ApkIdentity(package, code, fingerprint, before)
@@ -131,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     trust.add_argument("--expected-cert", help="Trusted installed certificate SHA-256, not the APK checksum")
     parser.add_argument("--installed-version-code", type=int)
     parser.add_argument("--allow-same-version", action="store_true", help="Developer verification only, not release approval")
+    parser.add_argument("--release-version-name", help="Also require exact versionName, non-debug APK and no INTERNET permission")
     parser.add_argument("--apksigner")
     parser.add_argument("--aapt")
     args = parser.parse_args(argv)
@@ -140,8 +161,10 @@ def main(argv: list[str] | None = None) -> int:
             raise VerificationError("Use either baseline APK or installed certificate plus version code")
         if args.expected_cert and (args.installed_version_code is None or args.installed_version_code <= 0):
             raise VerificationError("Trusted installed version code required with certificate")
+        if args.release_version_name is not None and args.allow_same_version:
+            raise VerificationError("Release verification cannot allow a same-version update")
         signer, aapt = locate("apksigner", args.apksigner), locate("aapt", args.aapt)
-        candidate = inspect_apk(args.candidate, signer, aapt)
+        candidate = inspect_apk(args.candidate, signer, aapt, args.release_version_name)
         report["candidate"] = asdict(candidate)
         if args.baseline:
             baseline = inspect_apk(args.baseline, signer, aapt)
@@ -151,6 +174,9 @@ def main(argv: list[str] | None = None) -> int:
             cert, code = normalize_digest(args.expected_cert), args.installed_version_code
         compare(candidate, cert, code, args.allow_same_version)
         report["status"] = "IDENTITY_MATCH_ONLY"
+        report["release_metadata_checked"] = args.release_version_name is not None
+        if args.release_version_name is not None:
+            report["expected_version_name"] = args.release_version_name
         report["expected_cert"] = cert
         report["installed_version_code"] = code
         report["notice"] = "No actual installation, Android migration, device validation or release approval performed."
