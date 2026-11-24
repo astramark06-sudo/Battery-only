@@ -116,7 +116,7 @@ class MainActivity : Activity() {
     }
 
     private fun restorePendingExport(name: String?): File? {
-        if (name == null || !name.matches(Regex("BatteryScope_History_[0-9_]+[.]csv"))) return null
+        if (name == null || !name.matches(Regex("BatteryScope_(History|Backup)_[0-9_]+[.](csv|bsh)"))) return null
         return File(File(filesDir, "exports"), name).takeIf { it.isFile }
     }
 
@@ -205,6 +205,22 @@ class MainActivity : Activity() {
         historyButtons.addView(usageButton, LinearLayout.LayoutParams(0, -2, 1f))
         historyButtons.addView(exportButton, LinearLayout.LayoutParams(0, -2, 1f))
         content.addView(historyButtons)
+        val backupButton = Button(this).apply {
+            text = "Save portable history backup"
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Save history backup")
+                    .setMessage("The backup contains raw battery records and any recorded app names. Keep it private and save it outside BatteryScope app storage. It is not encrypted.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Save") { _, _ -> exportRecorderHistory(true) }.show()
+            }
+        }
+        content.addView(backupButton, LinearLayout.LayoutParams(-1, -2))
+        val restoreButton = Button(this).apply {
+            text = "Restore earlier history backup"
+            setOnClickListener { chooseHistoryBackup() }
+        }
+        content.addView(restoreButton, LinearLayout.LayoutParams(-1, -2))
         val batterySettingsButton = Button(this).apply {
             text = "Battery optimisation settings"
             setOnClickListener { openBatteryOptimisationSettings() }
@@ -786,13 +802,13 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun exportRecorderHistory() {
+    private fun exportRecorderHistory(backup: Boolean = false) {
         if (exportInFlight || pendingExportFile != null) {
             statusText.text = "A history export is already in progress."
             return
         }
         exportInFlight = true
-        statusText.text = "Preparing CSV history in the background…"
+        statusText.text = if (backup) "Preparing portable history backup…" else "Preparing CSV history in the background…"
         Thread {
             var database: RecorderDatabase? = null
             var file: File? = null
@@ -802,10 +818,11 @@ class MainActivity : Activity() {
                 val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
                 val directory = File(filesDir, "exports")
                 if (!directory.exists() && !directory.mkdirs()) throw IllegalStateException("Could not create private export directory")
-                val exportFile = File(directory, "BatteryScope_History_" + timestamp + ".csv")
+                val exportFile = File(directory, if (backup) "BatteryScope_Backup_" + timestamp + ".bsh" else "BatteryScope_History_" + timestamp + ".csv")
                 file = exportFile
                 database = RecorderDatabase(applicationContext)
-                val records = exportFile.bufferedWriter(Charsets.UTF_8).use { database!!.exportCsv(it) }
+                val records = if (backup) exportFile.outputStream().use { database!!.exportBackup(it).total }
+                    else exportFile.bufferedWriter(Charsets.UTF_8).use { database!!.exportCsv(it) }
                 noData = records == 0L
                 if (noData) exportFile.delete()
             } catch (t: Throwable) {
@@ -816,39 +833,46 @@ class MainActivity : Activity() {
             }
             runOnUiThread {
                 exportInFlight = false
-                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (isFinishing || isDestroyed) {
+                    file?.delete() // no document picker can be opened by a destroyed Activity
+                    return@runOnUiThread
+                }
                 when {
                     failure != null -> statusText.text = "HISTORY EXPORT FAILED: " + failure
                     noData -> statusText.text = "No telemetry history exists to export yet."
-                    file != null -> launchCsvExport(file!!)
+                    file != null -> launchHistoryExport(file!!)
                 }
             }
         }.start()
     }
 
     @Suppress("DEPRECATION")
-    private fun launchCsvExport(file: File) {
+    private fun launchHistoryExport(file: File) {
         if (!file.isFile || !file.canRead()) {
-            statusText.text = "CSV export unavailable: saved file cannot be read."
+            statusText.text = "History export unavailable: saved file cannot be read."
             return
         }
         pendingExportFile = file
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "text/csv"
+            type = if (file.extension == "bsh") "application/octet-stream" else "text/csv"
             putExtra(Intent.EXTRA_TITLE, file.name)
         }
         try {
             startActivityForResult(intent, CSV_EXPORT_REQUEST_CODE)
         } catch (t: Throwable) {
             pendingExportFile = null
-            statusText.text = "Could not open Android document picker: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}. CSV remains in app storage."
+            statusText.text = "Could not open Android document picker: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}. Staging copy remains in app storage."
         }
     }
 
     @Deprecated("Handled for Android document-picker compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == BACKUP_IMPORT_REQUEST_CODE) {
+            if (resultCode == RESULT_OK) data?.data?.let { restoreHistoryBackup(it) }
+            return
+        }
         if (requestCode != CSV_EXPORT_REQUEST_CODE) return
         val source = pendingExportFile
         pendingExportFile = null
@@ -859,12 +883,12 @@ class MainActivity : Activity() {
         }
         val destination: Uri = data.data!!
         if (source == null || !source.isFile) {
-            statusText.text = "CSV export failed: source file is missing. Internal history remains stored."
+            statusText.text = "History export failed: source file is missing. Internal history remains stored."
             return
         }
         if (exportInFlight) return
         exportInFlight = true
-        statusText.text = "Copying CSV to the selected destination in the background…"
+        statusText.text = "Copying history to the selected destination…"
         val resolver = contentResolver
         Thread {
             var failure: String? = null
@@ -880,9 +904,58 @@ class MainActivity : Activity() {
                 exportInFlight = false
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 statusText.text = if (failure == null) {
-                    "CSV exported successfully: ${source.name}"
+                    "History exported successfully: ${source.name}"
                 } else {
-                    "CSV export failed: ${failure}. Internal copy retained."
+                    "History export failed: ${failure}. Internal copy retained."
+                }
+            }
+        }.start()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun chooseHistoryBackup() {
+        if (exportInFlight || pendingExportFile != null) return
+        AlertDialog.Builder(this)
+            .setTitle("Restore earlier history")
+            .setMessage("Use only a BatteryScope .bsh backup from this handset. Existing history will not be overwritten. A backup overlapping existing timestamps will be rejected. Large backups may take time and temporary storage.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Choose backup") { _, _ ->
+                try {
+                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                    }, BACKUP_IMPORT_REQUEST_CODE)
+                } catch (t: Throwable) {
+                    statusText.text = "Could not open backup picker: " + t.javaClass.simpleName
+                }
+            }.show()
+    }
+
+    private fun restoreHistoryBackup(uri: Uri) {
+        if (exportInFlight || pendingExportFile != null) return
+        exportInFlight = true
+        statusText.text = "Validating and restoring earlier history…"
+        val app = applicationContext
+        Thread {
+            var staging: File? = null
+            val message = try {
+                val file = File.createTempFile("restore_", ".bsh", app.cacheDir)
+                staging = file
+                val input = app.contentResolver.openInputStream(uri) ?: error("Cannot read selected backup")
+                input.use { source -> file.outputStream().use { HistoryBackup.stage(source,it) } }
+                val database = RecorderDatabase(app)
+                val result = try { file.inputStream().use { database.restoreBackup(it) } } finally { database.close() }
+                "Restored ${result.samples} samples and ${result.events} events. Existing records preserved."
+            } catch (t: Throwable) {
+                "Restore failed; no imported records committed: " + (t.message ?: t.javaClass.simpleName)
+            } finally {
+                staging?.delete()
+            }
+            runOnUiThread {
+                exportInFlight = false
+                if (!isFinishing && !isDestroyed) {
+                    statusText.text = message
+                    refreshHistoryDisplay(true)
                 }
             }
         }.start()
@@ -892,6 +965,7 @@ class MainActivity : Activity() {
         private const val SYSFS_UI_REFRESH_MS = 15_000L
         private const val PENDING_EXPORT_NAME = "pending_export_name"
         private const val CSV_EXPORT_REQUEST_CODE = 5101
+        private const val BACKUP_IMPORT_REQUEST_CODE = 5103
         private const val NOTIFICATION_REQUEST_CODE = 5102
     }
 }

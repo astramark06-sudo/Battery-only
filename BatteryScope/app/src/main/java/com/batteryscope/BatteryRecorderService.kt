@@ -29,6 +29,8 @@ import android.os.SystemClock
 import android.provider.Settings
 import org.json.JSONObject
 import java.io.Writer
+import java.io.InputStream
+import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -1234,12 +1236,89 @@ class RecorderDatabase(context: Context) :
         else if (hours > 0) hours.toString() + "h " + remaining + "m" else remaining.toString() + "m"
     }
 
+    private data class SnapshotRange(val minId: Long, val maxId: Long, val count: Long)
+    private data class HistorySnapshot(val samples: SnapshotRange, val events: SnapshotRange)
+
+    /** One SQL statement captures both immutable row ranges at a single point in time.
+     * Recorder inserts append above the upper bound; restore prepends below the lower bound.
+     */
+    private fun snapshot(db: SQLiteDatabase): HistorySnapshot =
+        db.rawQuery("""SELECT
+            (SELECT COALESCE(MIN(id),1) FROM samples),(SELECT COALESCE(MAX(id),0) FROM samples),(SELECT COUNT(*) FROM samples),
+            (SELECT COALESCE(MIN(id),1) FROM events),(SELECT COALESCE(MAX(id),0) FROM events),(SELECT COUNT(*) FROM events)
+        """.trimIndent(), null).use { c ->
+            check(c.moveToFirst())
+            HistorySnapshot(SnapshotRange(c.getLong(0),c.getLong(1),c.getLong(2)), SnapshotRange(c.getLong(3),c.getLong(4),c.getLong(5)))
+        }
+
+    private fun snapshotRows(db: SQLiteDatabase, table: String, range: SnapshotRange, columns: List<HistoryBackup.Column>): Sequence<List<String?>> =
+        sequence {
+            val names = columns.joinToString(",") { it.name }
+            db.rawQuery("SELECT $names FROM $table WHERE id BETWEEN ? AND ? ORDER BY id",
+                arrayOf(range.minId.toString(), range.maxId.toString())).use { cursor ->
+                while (cursor.moveToNext()) yield(columns.indices.map { i -> if (cursor.isNull(i)) null else cursor.getString(i) })
+            }
+        }
+
+    internal fun exportBackup(output: OutputStream): HistoryBackup.Counts {
+        val db = readableDatabase
+        val snap = snapshot(db)
+        val counts = HistoryBackup.Counts(snap.samples.count, snap.events.count)
+        HistoryBackup.write(output, counts,
+            snapshotRows(db,"samples",snap.samples,HistoryBackup.sampleColumns),
+            snapshotRows(db,"events",snap.events,HistoryBackup.eventColumns))
+        return counts
+    }
+
+    /** Transactional non-destructive restore of earlier history into this installation. */
+    internal fun restoreBackup(input: InputStream): HistoryBackup.Counts {
+        val db = writableDatabase
+        db.beginTransactionNonExclusive()
+        try {
+            val earliest = db.rawQuery("SELECT MIN(t) FROM (SELECT MIN(timestamp_ms) AS t FROM samples UNION ALL SELECT MIN(timestamp_ms) AS t FROM events)", null).use {
+                check(it.moveToFirst()); if (it.isNull(0)) null else it.getLong(0)
+            }
+            fun minId(table: String): Long? = db.rawQuery("SELECT MIN(id) FROM $table",null).use {
+                check(it.moveToFirst()); if (it.isNull(0)) null else it.getLong(0)
+            }
+            var sampleId = 1L
+            var eventId = 1L
+            fun insert(table: String, id: Long, columns: List<HistoryBackup.Column>, row: List<String?>) {
+                HistoryBackup.requireEarlier(requireNotNull(row.first()).toLong(), earliest)
+                val values = ContentValues().apply {
+                    put("id", id)
+                    columns.forEachIndexed { index, column ->
+                        val value = row[index]
+                        if (value == null) putNull(column.name) else when(column.type) {
+                            HistoryBackup.Type.INTEGER -> put(column.name, value.toLong())
+                            HistoryBackup.Type.REAL -> put(column.name, value.toDouble())
+                            HistoryBackup.Type.TEXT -> put(column.name, value)
+                        }
+                    }
+                }
+                db.insertOrThrow(table, null, values)
+            }
+            val counts = HistoryBackup.read(input, { header ->
+                require(header.total > 0L) { "Backup has no history" }
+                sampleId = HistoryBackup.firstImportedId(minId("samples"), header.samples)
+                eventId = HistoryBackup.firstImportedId(minId("events"), header.events)
+            }, { row -> insert("samples",sampleId++,HistoryBackup.sampleColumns,row) },
+               { row -> insert("events",eventId++,HistoryBackup.eventColumns,row) })
+            db.setTransactionSuccessful()
+            return counts
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     /** Returns the number of actual data records, excluding the header. */
     fun exportCsv(writer: Writer): Long {
         writer.write(RecorderCsv.encodeRow(RecorderCsv.header))
         var count = 0L
-        readableDatabase.rawQuery("SELECT * FROM samples ORDER BY timestamp_ms,id", null).use { samples ->
-            readableDatabase.rawQuery("SELECT timestamp_ms,event_type,details FROM events ORDER BY timestamp_ms,id", null).use { events ->
+        val db = readableDatabase
+        val snap = snapshot(db)
+        db.rawQuery("SELECT * FROM samples WHERE id BETWEEN ? AND ? ORDER BY timestamp_ms,id", arrayOf(snap.samples.minId.toString(),snap.samples.maxId.toString())).use { samples ->
+            db.rawQuery("SELECT timestamp_ms,event_type,details FROM events WHERE id BETWEEN ? AND ? ORDER BY timestamp_ms,id", arrayOf(snap.events.minId.toString(),snap.events.maxId.toString())).use { events ->
                 val timestampColumn = samples.getColumnIndexOrThrow("timestamp_ms")
                 var hasSample = samples.moveToFirst()
                 var hasEvent = events.moveToFirst()
@@ -1262,6 +1341,7 @@ class RecorderDatabase(context: Context) :
                 }
             }
         }
+        check(count == snap.samples.count + snap.events.count) { "CSV snapshot row-count mismatch" }
         writer.flush()
         return count
     }
