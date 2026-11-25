@@ -37,6 +37,7 @@ internal class ChargingCurvePanel(context: Context) : LinearLayout(context) {
         orientation = VERTICAL
         setBackgroundColor(Color.rgb(20,29,43))
         addView(label().apply { text = "RECENT CHARGING OBSERVATIONS • LAST 30 DAYS" })
+        addView(label().apply { text = "Up to 8 newest + 8 longest earlier observed segments. Shorter older segments may be omitted; see report for coverage." })
         addView(description)
         next.text = "Show earlier segment"
         next.setOnClickListener {

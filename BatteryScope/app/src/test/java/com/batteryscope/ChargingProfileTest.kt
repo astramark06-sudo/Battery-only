@@ -120,6 +120,37 @@ class ChargingProfileTest {
         assertEquals(4L,r.temperature.count)
     }
 
+    @Test fun chartKeepsLongOlderSegmentsDespiteRecentSingletons() {
+        val r = ChargingProfile()
+        repeat(20) { segment ->
+            val start = segment*2_000_000L
+            val count = if (segment < 12) segment+2 else 1
+            repeat(count) { i -> r.accept(sample(start+i*30_000L,segment)) }
+        }
+        assertEquals(20L,r.eligibleSegments)
+        assertEquals(98L,r.eligibleCurveSamples)
+        assertEquals((19 downTo 12).toList(),r.recentCurves().map { it.first.percent })
+        val selected = r.chartCurves()
+        assertEquals(16,selected.size)
+        assertEquals((19 downTo 4).toList(),selected.map { it.first.percent })
+        assertEquals(84L,selected.sumOf { it.count })
+        assertTrue(selected.sumOf { it.points().size } <= 256)
+        assertTrue(r.report().contains("16/20 eligible segments; 84/98 observations"))
+    }
+
+    @Test fun olderEqualDurationsPreferNewerAndSingletonsAreNotPromoted() {
+        val r = ChargingProfile()
+        repeat(24) { segment ->
+            val start = segment*200_000L
+            r.accept(sample(start,segment))
+            if (segment != 15) r.accept(sample(start+30_000L,segment))
+        }
+        val selected = r.chartCurves()
+        assertEquals((23 downTo 16).toList()+(14 downTo 7).toList(),selected.map { it.first.percent })
+        assertEquals(16,selected.distinct().size)
+        assertEquals(24L,r.eligibleSegments)
+    }
+
     @Test fun advertisedLimitsRemainSeparateFromMeasuredPower() {
         val r = ChargingProfile()
         r.accept(sample(0,20).copy(advertisedCurrentUa=3_000_000,advertisedVoltageUv=5_000_000))

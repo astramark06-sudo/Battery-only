@@ -254,7 +254,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 longOrNull(8),longOrNull(9),longOrNull(10),longOrNull(11),longOrNull(12),longOrNull(13)
             ))
         }
-        curves?.addAll(profile.recentCurves())
+        curves?.addAll(profile.chartCurves())
         return profile.report()
     }
 

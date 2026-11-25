@@ -58,6 +58,26 @@ internal class ChargingProfile {
     private val curves = ArrayList<Curve>()
     /** Newest first; bounded to eight distinct observed segments. */
     fun recentCurves(): List<Curve> = curves.asReversed().toList()
+    private val olderLongCurves = ArrayList<Curve>()
+    var eligibleSegments = 0L
+        private set
+    var eligibleCurveSamples = 0L
+        private set
+    /** Eight newest segments plus up to eight longest earlier non-singleton segments.
+     * All returned in reverse recording order, with no synthetic joins. */
+    fun chartCurves(): List<Curve> = (olderLongCurves + curves).asReversed().toList()
+    private fun keepOlder(curve: Curve) {
+        val duration = curve.last.elapsed-curve.first.elapsed
+        if (duration <= 0L) return
+        olderLongCurves.add(curve)
+        if (olderLongCurves.size > 8) {
+            // Drop the shortest; prefer newer segments when durations are equal.
+            val discard = olderLongCurves.indices.minByOrNull {
+                olderLongCurves[it].last.elapsed-olderLongCurves[it].first.elapsed
+            }!!
+            olderLongCurves.removeAt(discard)
+        }
+    }
     var latestCurve: Curve? = null
         private set
     val bandTemperatures = List(10) { Range() }
@@ -139,6 +159,7 @@ internal class ChargingProfile {
         if (s.percent != null && s.percent in 0..100) {
             bandTemperatures[minOf(s.percent/10,9)].add(temp)
             if (s.boot != null && s.boot >= 0 && s.elapsed >= 0) {
+                eligibleCurveSamples++
                 val curve = latestCurve
                 if (curve != null && before === curve.last && before.plug == s.plug &&
                     RecorderTimeMath.isRateInterval(s.elapsed-before.elapsed,before.boot,s.boot)) {
@@ -147,7 +168,8 @@ internal class ChargingProfile {
                     val next = Curve(s)
                     latestCurve = next
                     curves.add(next)
-                    if (curves.size > 8) curves.removeAt(0)
+                    eligibleSegments++
+                    if (curves.size > 8) keepOlder(curves.removeAt(0))
                 }
             }
         }
@@ -224,6 +246,9 @@ internal class ChargingProfile {
         }
         appendLine("Temperature bands use observed SOC at each sample (100% belongs to the final band), not interval averages.")
         appendLine()
+        val chartSelection = chartCurves()
+        appendLine("Chart selection: ${chartSelection.size}/$eligibleSegments eligible segments; ${chartSelection.sumOf { it.count }}/$eligibleCurveSamples observations represented before thinning; ${chartSelection.sumOf { it.points().size }} retained dots.")
+        appendLine("Charts retain the eight most recent segments plus up to eight longest earlier segments with observed duration; gaps remain separate, other segments are not shown.")
         appendLine("Latest eligible charging curve checkpoints (last 30 days):")
         val curve = latestCurve
         if (curve == null) appendLine("No valid level with known boot identity.")
