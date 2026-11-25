@@ -1,5 +1,11 @@
 # BatteryScope changelog
 
+## 2026-11-25 — User-prioritized charger/phone/battery evidence and charging stages
+
+- User clarified that the primary objective is charger/phone/battery communication evidence and 0–20%, 20–80%, 80–100% charging performance. Existing ordinary-app telemetry already separates Android battery state/current/temperature, advertised maxima, readable raw external/BMS/USB-C/PD nodes and unavailable charger input. No direct proprietary handshake capture, privileged access, hardware modification or charging control. Phone is the intermediary; raw flags are not protocol packets.
+- Added independent coarse SOC-stage interval accumulators, sampled temperature ranges and completed exact-boundary span duration min/max/count, using the same existing bounded history scan. Exclude cross-stage jumps, invalid intervals, reversals and gaps; no interpolation or extrapolation of missing boundary observations. Retain finer 10% detail. Two focused JVM regressions. New cumulative CI required; no schema, export, identity, signing, permissions, recording cadence or history changes.
+- Previous accepted software source 3cf01307 passed Android 45538645487 and signing 45538645360, 95 JVM + 23 emulator tests; documentation checkpoint 05f1e57 records artifact verification. New stage scope supersedes software stop condition only for this incremental change. Next: verify new cumulative Android/signing CI and artifacts; address actual failures. Physical handset acceptance, trusted installed signer, OEM electrical units and actual charger input remain external blockers. Do not force discharge, uninstall, alter history, solicit keys or infer protocol messages.
+
 ## 2026-11-25 — Full observed temperature ranges for thinned charts
 
 - Replay of the original CSV confirmed the coverage selection: 206 battery samples, 167 eligible charging observations across 32 segments; newest eight represent 14 samples/4.890 min; new selection 150 samples/96.935 min, 61 dots. Two selected segments lost the observed temperature minimum in thinning: 37–80% SOC, 66 samples, all 35.6–38.1°C versus retained 35.7–38.1°C; 23–36% SOC, 21 samples, all 36.1–38.4°C versus retained 36.3–38.4°C.

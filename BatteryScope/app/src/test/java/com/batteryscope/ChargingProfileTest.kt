@@ -203,6 +203,44 @@ class ChargingProfileTest {
         assertTrue(r.report().contains("missing 2; rejected 1"))
     }
 
+    @Test fun coarseStagesCountIndependentIntervalsAndExactCompletedSpans() {
+        val r = ChargingProfile()
+        listOf(0,10,20,20,35,60,80,90,100).forEachIndexed { i,p ->
+            r.accept(sample(i*30_000L,p))
+        }
+        assertEquals(listOf(20L,60L,20L),r.phaseBands.map { it.gained })
+        assertEquals(listOf(60_000L,120_000L,60_000L),r.phaseBands.map { it.ms })
+        assertEquals(listOf(1L,1L,1L),r.completedPhaseMinutes.map { it.count })
+        assertEquals(listOf(1.0 to 1.0,2.0 to 2.0,1.0 to 1.0),r.completedPhaseMinutes.map { it.bounds() })
+        assertEquals(0L,r.omittedPhaseIntervals)
+        assertTrue(r.report().contains("20–80%: 1800.00 pp/h"))
+    }
+
+    @Test fun stagesNeverInventMissingBoundariesOrBridgeGaps() {
+        val r = ChargingProfile()
+        listOf(9,19,21,80,90,100).forEachIndexed { i,p ->
+            r.accept(sample(i*30_000L,p))
+        }
+        assertEquals(0L,r.completedPhaseMinutes[0].count)
+        assertEquals(0L,r.completedPhaseMinutes[1].count)
+        assertEquals(1L,r.completedPhaseMinutes[2].count)
+        assertEquals(1L,r.omittedPhaseIntervals)
+        assertEquals(59L,r.phaseBands[1].gained)
+        val g = ChargingProfile()
+        g.accept(sample(0,20))
+        g.accept(sample(120_000,50))
+        g.accept(sample(150_000,80))
+        assertEquals(0L,g.completedPhaseMinutes[1].count)
+        assertEquals(1L,g.omittedPhaseIntervals)
+        assertEquals(30L,g.phaseBands[1].gained)
+        val d = ChargingProfile()
+        d.accept(sample(0,80))
+        d.accept(sample(30_000,90))
+        d.accept(sample(60_000,89))
+        d.accept(sample(90_000,100))
+        assertEquals(0L,d.completedPhaseMinutes[2].count)
+    }
+
     @Test fun rejectsGapsBootChangesReversalsAndCrossBandJumps() {
         val r = ChargingProfile()
         r.accept(sample(1000,15))

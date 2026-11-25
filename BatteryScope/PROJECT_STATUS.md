@@ -1,5 +1,11 @@
 # BatteryScope project status and engineering handoff
 
+## 2026-11-25 — User-prioritized charger/phone/battery evidence and charging stages
+
+- User clarified that the primary objective is charger/phone/battery communication evidence and 0–20%, 20–80%, 80–100% charging performance. Existing ordinary-app telemetry already separates Android battery state/current/temperature, advertised maxima, readable raw external/BMS/USB-C/PD nodes and unavailable charger input. No direct proprietary handshake capture, privileged access, hardware modification or charging control. Phone is the intermediary; raw flags are not protocol packets.
+- Added independent coarse SOC-stage interval accumulators, sampled temperature ranges and completed exact-boundary span duration min/max/count, using the same existing bounded history scan. Exclude cross-stage jumps, invalid intervals, reversals and gaps; no interpolation or extrapolation of missing boundary observations. Retain finer 10% detail. Two focused JVM regressions. New cumulative CI required; no schema, export, identity, signing, permissions, recording cadence or history changes.
+- Previous accepted software source 3cf01307 passed Android 45538645487 and signing 45538645360, 95 JVM + 23 emulator tests; documentation checkpoint 05f1e57 records artifact verification. New stage scope supersedes software stop condition only for this incremental change. Next: verify new cumulative Android/signing CI and artifacts; address actual failures. Physical handset acceptance, trusted installed signer, OEM electrical units and actual charger input remain external blockers. Do not force discharge, uninstall, alter history, solicit keys or infer protocol messages.
+
 ## 2026-11-25 — Charging-first software acceptance checkpoint (supersedes older status entries)
 
 - **Verified source:** `3cf01307a827cbaa1c0826e6e5daf5517af831e3`, draft PR #3, branch `fix/apk-update-preflight`. Android CI [45538645487](https://github.com/astramark06-sudo/Battery-only/actions/runs/45538645487) and signing-policy CI [45538645360](https://github.com/astramark06-sudo/Battery-only/actions/runs/45538645360) completed successfully. This checkpoint changes documentation only; source, build configuration and test files are identical to the verified source. No additional build is necessary for this documentation change.

@@ -91,6 +91,51 @@ internal class ChargingProfile {
         private set
     val bandTemperatures = List(10) { Range() }
     val bands = List(10) { Band() }
+    /** Independent coarse ranges; do not sum rounded fine-band rates. */
+    val phaseBounds = listOf(0 to 20, 20 to 80, 80 to 100)
+    val phaseBands = List(3) { Band() }
+    val phaseTemperatures = List(3) { Range() }
+    val completedPhaseMinutes = List(3) { Range() }
+    private val phaseStart = arrayOfNulls<Long>(3)
+    var omittedPhaseIntervals = 0L
+        private set
+
+    private fun observePhases(before: Sample?, after: Sample) {
+        val hi = after.percent
+        val valid = after.state == "CHARGING" && connected(after.plug) &&
+            hi != null && hi in 0..100 && after.elapsed >= 0L &&
+            after.boot != null && after.boot >= 0
+        val lo = before?.percent
+        val adjacent = valid && before != null && lo != null && lo in 0..100 &&
+            hi!! >= lo && before.state == "CHARGING" && before.plug == after.plug &&
+            before.elapsed >= 0L &&
+            RecorderTimeMath.isRateInterval(after.elapsed-before.elapsed,before.boot,after.boot)
+        if (adjacent) {
+            val low = checkNotNull(lo)
+            val high = checkNotNull(hi)
+            val prior = checkNotNull(before)
+            val index = phaseBounds.indexOfFirst { (a,b) -> low >= a && low < b }
+                .let { if (low == 100) 2 else it }
+            if (index >= 0 && high <= phaseBounds[index].second) {
+                phaseBands[index].add(after.elapsed-prior.elapsed,high-low)
+            } else omittedPhaseIntervals++
+        } else if (before != null && before.state == "CHARGING" &&
+            after.state == "CHARGING" && connected(after.plug) && before.plug == after.plug) {
+            omittedPhaseIntervals++
+        }
+        phaseBounds.forEachIndexed { i,(start,end) ->
+            if (!adjacent) phaseStart[i] = null
+            val began = phaseStart[i]
+            if (began != null && hi != null && hi >= end) {
+                if (adjacent && hi == end && after.elapsed > began) {
+                    completedPhaseMinutes[i].add((after.elapsed-began)/60_000.0)
+                }
+                phaseStart[i] = null
+            }
+            // Exact observed start only; repeated equal readings keep the first.
+            if (valid && hi == start && phaseStart[i] == null) phaseStart[i] = after.elapsed
+        }
+    }
     val voltage = Range()
     val current = Range()
     val temperature = Range()
@@ -159,6 +204,7 @@ internal class ChargingProfile {
         val before = previous
         previous = s
         observeConnection(before,s)
+        observePhases(before,s)
         if (s.state != "CHARGING" || !connected(s.plug)) return
         samples++
         voltage.add(s.voltageMv?.toDouble())
@@ -167,6 +213,8 @@ internal class ChargingProfile {
         temperature.add(temp)
         if (s.percent != null && s.percent in 0..100) {
             bandTemperatures[minOf(s.percent/10,9)].add(temp)
+            val phase = if (s.percent < 20) 0 else if (s.percent < 80) 1 else 2
+            phaseTemperatures[phase].add(temp)
             if (s.boot != null && s.boot >= 0 && s.elapsed >= 0) {
                 eligibleCurveSamples++
                 val curve = latestCurve
@@ -247,6 +295,16 @@ internal class ChargingProfile {
         appendLine("  Other known non-charging endpoints: " + minutes(observedMs(ConnectedState.OTHER)) + " min")
         appendLine("  State transition or unknown endpoints: " + minutes(observedMs(ConnectedState.TRANSITION_OR_UNKNOWN)) + " min")
         appendLine("Connection-related intervals excluded: $excludedConnectedIntervals (source changes, invalid timing, gaps or unknown/reboot identity). Matching sampled endpoints do not establish continuous state; this is observed coverage, not full plug-in duration. Zero coverage means no eligible observed time.")
+        appendLine("=== CHARGING STAGES (LAST 30 DAYS) ===")
+        phaseBounds.forEachIndexed { i,(a,b) ->
+            val band = phaseBands[i]
+            appendLine("  $a–$b%: " +
+                (band.rate()?.let { String.format(Locale.US,"%.2f pp/h • +%d points • %.2f min observed",it,band.gained,band.ms/60_000.0) } ?: "insufficient observations"))
+            appendLine("    Temperature: " + phaseTemperatures[i].text("°C"))
+            appendLine("    Completed exact-boundary spans: " + completedPhaseMinutes[i].text("min",2))
+        }
+        appendLine("Stage speeds use eligible nondecreasing intervals wholly within each stage, including jumps across finer 10% bands. Cross-stage jumps or invalid adjacent same-source charging intervals omitted: $omittedPhaseIntervals. Temperature samples use the stage containing the observed SOC; 100% belongs to the final stage.")
+        appendLine("Completed spans require observed start and end percentages and uninterrupted eligible CHARGING samples; no interpolation, estimates or merging across gaps. Missing full spans are unavailable, not zero. Do not deliberately drain the battery to collect a span.")
         appendLine("Observed SOC-band speed (percentage points/hour; no current or watts inferred):")
         bands.forEachIndexed { i, band ->
             appendLine("  " + i*10 + "–" + (i+1)*10 + "%: " +
