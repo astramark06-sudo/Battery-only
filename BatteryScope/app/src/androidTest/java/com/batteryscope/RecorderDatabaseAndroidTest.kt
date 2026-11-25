@@ -149,7 +149,7 @@ class RecorderDatabaseAndroidTest {
         }
     }
 
-    @Test fun largeOlderHistoryDoesNotChangeRecentOverview() = database { db ->
+    @Test fun largeOlderHistoryDoesNotChangeRecentOverview(): Unit = database { db ->
         val now = 2_000_000_000_000L
         val day = 86_400_000L
         repeat(300) { i -> sample(db,now-9_000_000+i*30_000L,i*30_000L,20+i/5,true) }
@@ -178,9 +178,10 @@ class RecorderDatabaseAndroidTest {
         assertEquals(50_300L,number(db.readableDatabase,"SELECT COUNT(*) FROM samples"))
         // Report timings, no brittle device-independent timing threshold.
         android.util.Log.i("BatteryScopeBenchmark","Overview synthetic 300 rows ns=$smallNs; 50300 rows (300 recent) ns=$largeNs")
+        Unit // JUnit requires a JVM void method, not the integer returned by Log.i.
     }
 
-    @Test fun concurrentRecorderAppendWaitsForRestoreAndKeepsCommittedSequence() = database { source ->
+    @Test fun concurrentRecorderAppendWaitsForRestoreAndKeepsCommittedSequence(): Unit = database { source ->
         repeat(100) { i -> sample(source,1000L+i*1000L,i*1000L,40,true) }
         val bytes = backup(source)
         val targetName = name()
