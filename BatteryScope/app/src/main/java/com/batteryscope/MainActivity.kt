@@ -32,6 +32,7 @@ class MainActivity : Activity() {
     private lateinit var dashboardScroll: DashboardScrollView
     private lateinit var liveSummary: TextView
     private lateinit var stageSummary: TextView
+    private lateinit var recorderSummary: TextView
     private lateinit var batteryText: TextView
     private lateinit var chargerText: TextView
     private lateinit var diagnosticText: TextView
@@ -164,6 +165,10 @@ class MainActivity : Activity() {
             text = "Waiting for battery readings…"
         }
         content.addView(liveSummary)
+        recorderSummary = makeText(13f,Color.rgb(142,226,185),false).apply {
+            text = "Recorder: checking"
+        }
+        content.addView(recorderSummary)
         stageSummary = makeText(14f, Color.rgb(230,237,247), false).apply {
             text = "Charging stages (last 30 days)\nWaiting for history…"
         }
@@ -490,11 +495,11 @@ class MainActivity : Activity() {
             plugged = plugged,
             health = health,
             technology = technology,
-            maxChargingCurrentUa = intent?.getIntExtra("max_charging_current", -1)?.takeIf { it > 0 },
-            maxChargingVoltageUv = intent?.getIntExtra("max_charging_voltage", -1)?.takeIf { it > 0 },
-            batteryPresent = intent?.extras?.let { if (it.containsKey("present")) it.getBoolean("present") else null },
-            invalidCharger = intent?.extras?.let { if (it.containsKey("invalid_charger")) it.getInt("invalid_charger") else null },
-            cycleCount = intent?.getIntExtra("cycle_count", -1)?.takeIf { it >= 0 },
+            maxChargingCurrentUa = BatteryBroadcastMetadata.advertised(intent,"max_charging_current"),
+            maxChargingVoltageUv = BatteryBroadcastMetadata.advertised(intent,"max_charging_voltage"),
+            batteryPresent = BatteryBroadcastMetadata.bool(intent,"present"),
+            invalidCharger = BatteryBroadcastMetadata.int(intent,"invalid_charger"),
+            cycleCount = BatteryBroadcastMetadata.cycles(intent),
             supplies = supplies,
             supplyRootReadable = readable
         )
@@ -608,7 +613,15 @@ class MainActivity : Activity() {
             if (!isFinishing && !isDestroyed) {
                 dashboardScroll.refreshContent {
                     liveSummary.setTextIfChanged(compactReport)
-                    monitorText.setTextIfChanged(statusReport + "\nRecorder: " + BatteryRecorderService.liveHealthReport())
+                    val health = BatteryRecorderService.liveHealthReport()
+                    monitorText.setTextIfChanged(statusReport + "\nRecorder: " + health)
+                    recorderSummary.setTextIfChanged("Recorder: " + when (health.substringBefore(" • ")) {
+                        "RECENT_SAMPLE_SAVED" -> "Recording • recent sample saved"
+                        "WAITING_FOR_FIRST_SAMPLE" -> "Waiting for first sample"
+                        "DEGRADED" -> "Sample failed • open recorder status"
+                        "STALE" -> "Recording not confirmed • open recorder status"
+                        else -> "Not running • open recorder status"
+                    })
                     batteryText.setTextIfChanged(batteryReport)
                     chargerText.setTextIfChanged(chargerReport)
                     diagnosticText.setTextIfChanged(diagnosticReport)
@@ -706,7 +719,7 @@ class MainActivity : Activity() {
                 database = RecorderDatabase(applicationContext)
                 database.chargingDashboard(now)
             } catch (t: Throwable) {
-                ("History read failed: " + t.javaClass.simpleName + ": " + (t.message ?: "unknown")) to emptyList<ChargingProfile.Curve>()
+                RecorderDatabase.ChargingDashboard("History read failed: " + t.javaClass.simpleName + ": " + (t.message ?: "unknown"),emptyList(),emptyList())
             } finally {
                 try { database?.close() } catch (_: Throwable) { }
             }
@@ -714,9 +727,9 @@ class MainActivity : Activity() {
                 val followUp = historyRefreshGate.finish()
                 if (!isFinishing && !isDestroyed && ::historyText.isInitialized) {
                     dashboardScroll.refreshContent {
-                        historyText.setTextIfChanged(result.first)
-                        stageSummary.setTextIfChanged(compactChargingStages(result.first))
-                        curvePanel.setCurves(result.second)
+                        historyText.setTextIfChanged(result.report)
+                        stageSummary.setTextIfChanged(compactChargingStages(result.stages))
+                        curvePanel.setCurves(result.curves)
                     }
                     if (followUp) refreshHistoryDisplay(true)
                 }

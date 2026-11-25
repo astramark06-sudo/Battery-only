@@ -133,7 +133,15 @@ internal class HistoryOperationCoordinator(
         val file = File.createTempFile("restore_", ".bsh", context.cacheDir)
         try {
             val input = context.contentResolver.openInputStream(uri) ?: error("Cannot read selected backup")
-            input.use { source -> file.outputStream().use { HistoryBackup.stage(source,it) } }
+            input.use { source -> file.outputStream().use { output ->
+                HistoryBackup.stage(source,output) { written,next ->
+                    // Reserve space for the staged chunk and estimated transactional restore.
+                    val required = next.toLong() + 2L * (written + next) + 16L * 1024 * 1024
+                    require(minOf(context.cacheDir.usableSpace,context.filesDir.usableSpace) >= required) {
+                        "Insufficient free space while staging backup; existing history unchanged"
+                    }
+                }
+            } }
             val estimatedRequired = 2L * file.length() + 16L * 1024 * 1024
             require(context.filesDir.usableSpace >= estimatedRequired) {
                 "Insufficient free internal storage for restore (estimated requirement " + estimatedRequired + " bytes)"

@@ -47,18 +47,15 @@ class DashboardScrollAndroidTest {
     }
 
     @Test fun compactStagesKeepOnlyStageDataAndMarkMissingValues() {
-        val report = "OTHER REPORT\n=== CHARGING STAGES (LAST 30 DAYS) ===\n" +
-            "  0–20%: insufficient observations\n    Temperature: unavailable\n    Completed exact-boundary spans: unavailable\n" +
-            "  20–80%: 45.00 pp/h • +60 points • 80.00 min observed\n    Temperature: 35.0 °C\n" +
-            "    Completed exact-boundary spans: 80.00 to 80.00 min (1 samples)\nStage speeds use eligible intervals\n" +
-            "Observed SOC-band speed\n  0–10%: 99 pp/h"
-        val summary = compactChargingStages(report)
+        val stages = listOf(ChargingProfile.Stage(20,80,45.0,60L,4_800_000L,
+            "80.00 to 80.00 min (1 samples)","79.50–80.50 min possible envelope (1 spans)"))
+        val summary = compactChargingStages(stages)
         assertTrue(summary.contains("0–20%: insufficient observations"))
-        assertTrue(summary.contains("20–80%: 45.00 pp/h"))
+        assertTrue(summary.contains("20–80%: 45.00 pp/h • 80.00 min observed"))
         assertTrue(summary.contains("Complete spans: 80.00 to 80.00 min"))
-        assertTrue(summary.contains("80–100%: unavailable"))
+        assertTrue(summary.contains("Bounded spans: 79.50–80.50 min"))
+        assertTrue(summary.contains("80–100%: insufficient observations"))
         assertFalse(summary.contains("0–10%"))
-        assertFalse(summary.contains("OTHER REPORT"))
-        assertTrue(compactChargingStages("History read failed").contains("0–20%: unavailable"))
+        assertTrue(compactChargingStages(emptyList()).contains("0–20%: insufficient observations"))
     }
 }

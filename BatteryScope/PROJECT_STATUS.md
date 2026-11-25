@@ -1,5 +1,11 @@
 # BatteryScope project status and engineering handoff
 
+## 2026-11-25 — Audit remediation batch 2 (structured summary and validation)
+
+- Build on batch 1, source 5683ee86. Pass typed charging-stage snapshot from same database scan as detailed report and curves; eliminate English report parsing in dashboard. Add concise visible recorder health, skip legacy application-attribution work in charging-focused reports without changing historical raw data.
+- Check available storage before each staged import chunk, retain final transactional restore preflight and rollback; conservative estimate is not a storage guarantee. Share optional broadcast value validation between recorder and dashboard (wrong types and advertised/cycle sentinels rejected from normalized fields, raw metadata preserved). Add staging and optional-broadcast regression tests; update structured-summary test.
+- Scope unchanged: no hardware control, schema, permissions, app identity, signing or backup/CSV format changes. New cumulative CI required. Remaining audit work: real activity and device tests, recorder opt-in/pause and overhead, incremental history scaling, provenance and backup protection, CI dependency/reproducibility checks, documentation cleanup, trusted signing and electrical validation. Do not merge/release/uninstall or modify user history.
+
 ## 2026-11-25 — Audit remediation batch 1 (charging completion, evidence, icon)
 
 - Previous source 0146c945 passed Android CI 45597784906 (97 JVM, 25 emulator) and signing CI 45597784793 (11 policy tests). Audit checkpoint PR comment 7161471272.

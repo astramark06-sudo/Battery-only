@@ -176,6 +176,17 @@ internal class ChargingProfile {
             }
         }
     }
+    data class Stage(val start: Int, val end: Int, val rate: Double?, val gained: Long,
+        val observedMs: Long, val exactText: String?, val boundedText: String?)
+    fun stages(): List<Stage> = phaseBounds.mapIndexed { i,(a,b) ->
+        val band = phaseBands[i]
+        val low = bracketedPhaseLowerMinutes[i].bounds()?.first
+        val high = bracketedPhaseUpperMinutes[i].bounds()?.second
+        Stage(a,b,band.rate(),band.gained,band.ms,
+            completedPhaseMinutes[i].takeIf { it.count > 0L }?.text("min",2),
+            if (low != null && high != null) String.format(Locale.US,"%.2f–%.2f min possible envelope (%d spans)",
+                low,high,bracketedPhaseLowerMinutes[i].count) else null)
+    }
     val voltage = Range()
     val current = Range()
     val temperature = Range()
@@ -338,17 +349,12 @@ internal class ChargingProfile {
         appendLine("  State transition or unknown endpoints: " + minutes(observedMs(ConnectedState.TRANSITION_OR_UNKNOWN)) + " min")
         appendLine("Connection-related intervals excluded: $excludedConnectedIntervals (source changes, invalid timing, gaps or unknown/reboot identity). Matching sampled endpoints do not establish continuous state; this is observed coverage, not full plug-in duration. Zero coverage means no eligible observed time.")
         appendLine("=== CHARGING STAGES (LAST 30 DAYS) ===")
-        phaseBounds.forEachIndexed { i,(a,b) ->
-            val band = phaseBands[i]
-            appendLine("  $a–$b%: " +
-                (band.rate()?.let { String.format(Locale.US,"%.2f pp/h • +%d points • %.2f min observed",it,band.gained,band.ms/60_000.0) } ?: "insufficient observations"))
+        stages().forEachIndexed { i,stage ->
+            appendLine("  ${stage.start}–${stage.end}%: " +
+                (stage.rate?.let { String.format(Locale.US,"%.2f pp/h • +%d points • %.2f min observed",it,stage.gained,stage.observedMs/60_000.0) } ?: "insufficient observations"))
             appendLine("    Temperature: " + phaseTemperatures[i].text("°C"))
-            appendLine("    Completed exact-boundary spans: " + completedPhaseMinutes[i].text("min",2))
-            val lower = bracketedPhaseLowerMinutes[i].bounds()?.first
-            val upper = bracketedPhaseUpperMinutes[i].bounds()?.second
-            appendLine("    Skipped-boundary spans: " + if (lower != null && upper != null)
-                String.format(Locale.US,"%.2f–%.2f min possible envelope (%d spans)",lower,upper,bracketedPhaseLowerMinutes[i].count)
-                else "unavailable")
+            appendLine("    Completed exact-boundary spans: " + (stage.exactText ?: "unavailable"))
+            appendLine("    Skipped-boundary spans: " + (stage.boundedText ?: "unavailable"))
         }
         appendLine("Stage speeds use eligible nondecreasing intervals wholly within each stage, including jumps across finer 10% bands. Cross-stage jumps or invalid adjacent same-source charging intervals omitted: $omittedPhaseIntervals. Temperature samples use the stage containing the observed SOC; 100% belongs to the final stage.")
         appendLine("Exact-boundary spans measure elapsed time between recorded boundary samples, not exact physical crossing times. Skipped boundaries use adjacent observation bounds; envelope is the smallest lower and largest upper bound across completed spans, not an average or interpolation. Gaps, reversals and source changes reset spans. Same-source FULL at 100% can finish a span ($fullEndpointSpans spans), but contributes no active charging rate. Time at 100% after first observation excluded from stage rates. Missing spans are unavailable, not zero.")

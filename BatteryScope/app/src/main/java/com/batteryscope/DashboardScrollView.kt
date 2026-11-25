@@ -30,25 +30,16 @@ internal class DashboardScrollView(context: Context) : ScrollView(context) {
     }
 }
 
-internal fun compactChargingStages(report: String): String {
-    val ranges = listOf("0–20%:", "20–80%:", "80–100%:")
-    val stageLines = report.substringAfter("=== CHARGING STAGES (LAST 30 DAYS) ===","")
-        .substringBefore("Stage speeds use").lineSequence().map { it.trim() }.toList()
-    return buildString {
-        appendLine("Charging stages • last 30 days")
-        ranges.forEachIndexed { index, range ->
-            val rowIndex = stageLines.indexOfFirst { it.startsWith(range) }
-            val row = stageLines.getOrNull(rowIndex) ?: "$range unavailable"
-            val completed = if (rowIndex >= 0) stageLines.getOrNull(rowIndex+2)
-                ?.takeIf { it.startsWith("Completed exact-boundary spans:") }
-                ?.substringAfter(": ") else null
-            append(row)
-            if (completed != null && completed != "unavailable") append("\n  Complete spans: $completed")
-            val skipped = stageLines.getOrNull(rowIndex+3)?.takeIf {
-                rowIndex >= 0 && it.startsWith("Skipped-boundary spans:")
-            }?.substringAfter(": ")
-            if (skipped != null && skipped != "unavailable") append("\n  Bounded spans: $skipped")
-            if (index != ranges.lastIndex) appendLine()
-        }
+internal fun compactChargingStages(stages: List<ChargingProfile.Stage>): String = buildString {
+    appendLine("Charging stages • last 30 days")
+    listOf(0 to 20,20 to 80,80 to 100).forEachIndexed { index,(a,b) ->
+        val stage = stages.singleOrNull { it.start == a && it.end == b }
+        append("$a–$b%: ")
+        append(stage?.rate?.let {
+            String.format(java.util.Locale.US,"%.2f pp/h • %.2f min observed",it,stage.observedMs/60_000.0)
+        } ?: "insufficient observations")
+        stage?.exactText?.let { append("\n  Complete spans: $it") }
+        stage?.boundedText?.let { append("\n  Bounded spans: $it") }
+        if (index != 2) appendLine()
     }
 }

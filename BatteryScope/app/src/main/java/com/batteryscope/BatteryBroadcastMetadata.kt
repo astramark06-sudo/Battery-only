@@ -15,6 +15,10 @@ internal object BatteryBroadcastMetadata {
     private fun raw(intent: Intent?, key: String): Any? = intent?.extras?.get(key)
 
     fun int(intent: Intent?, key: String): Int? = raw(intent,key) as? Int
+    fun bool(intent: Intent?, key: String): Boolean? = raw(intent,key) as? Boolean
+    fun advertised(intent: Intent?, key: String): Int? =
+        int(intent,key)?.takeIf { it in 1 until Int.MAX_VALUE }
+    fun cycles(intent: Intent?): Int? = int(intent,"cycle_count")?.takeIf { it in 0 until Int.MAX_VALUE }
 
     // Broad rejection-only range, not a claim that this is a safe operating temperature.
     fun temperatureC(rawTenths: Int?): Double? = rawTenths?.takeIf { it in -1000..1000 }?.div(10.0)

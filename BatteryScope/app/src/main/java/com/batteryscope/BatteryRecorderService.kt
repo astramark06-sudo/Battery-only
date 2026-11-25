@@ -379,16 +379,11 @@ class BatteryRecorderService : Service() {
             put("battery_status", status)
             put("plug_type", plug)
             if (voltage != null) put("battery_voltage_mv", voltage)
-            val maxChargingCurrent = intent?.getIntExtra("max_charging_current", -1) ?: -1
-            val maxChargingVoltage = intent?.getIntExtra("max_charging_voltage", -1) ?: -1
-            if (maxChargingCurrent > 0) put("max_charging_current_ua", maxChargingCurrent)
-            if (maxChargingVoltage > 0) put("max_charging_voltage_uv", maxChargingVoltage)
-            val present = intent?.extras?.let { if (it.containsKey("present")) it.getBoolean("present") else null }
-            if (present != null) put("battery_present", if (present) 1 else 0)
-            val invalidCharger = intent?.extras?.let { if (it.containsKey("invalid_charger")) it.getInt("invalid_charger") else null }
-            if (invalidCharger != null) put("invalid_charger_state", invalidCharger)
-            val cycles = intent?.getIntExtra("cycle_count", -1) ?: -1
-            if (cycles >= 0) put("battery_cycle_count", cycles)
+            BatteryBroadcastMetadata.advertised(intent,"max_charging_current")?.let { put("max_charging_current_ua",it) }
+            BatteryBroadcastMetadata.advertised(intent,"max_charging_voltage")?.let { put("max_charging_voltage_uv",it) }
+            BatteryBroadcastMetadata.bool(intent,"present")?.let { put("battery_present",if (it) 1 else 0) }
+            BatteryBroadcastMetadata.int(intent,"invalid_charger")?.let { put("invalid_charger_state",it) }
+            BatteryBroadcastMetadata.cycles(intent)?.let { put("battery_cycle_count",it) }
             BatteryBroadcastMetadata.temperatureC(temperature)?.let { put("temperature_c",it) }
             if (current != null) put("battery_current_ua", current)
             if (average != null) put("battery_average_current_ua", average)

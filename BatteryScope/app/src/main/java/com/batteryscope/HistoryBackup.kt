@@ -169,15 +169,16 @@ internal object HistoryBackup {
         return counts
     }
 
-    fun stage(input: InputStream, output: OutputStream) {
+    fun stage(input: InputStream, output: OutputStream, beforeWrite: (Long,Int) -> Unit = { _,_ -> }) {
         val bytes = ByteArray(64 * 1024)
         var size = 0L
         while (true) {
             val count = input.read(bytes)
             if (count < 0) break
             require(count > 0) { "Backup input stream made no progress" }
+            require(size + count <= MAX_BYTES) { "Backup exceeds supported size" }
+            beforeWrite(size,count)
             size += count
-            require(size <= MAX_BYTES) { "Backup exceeds supported size" }
             output.write(bytes, 0, count)
         }
     }

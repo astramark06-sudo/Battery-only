@@ -85,6 +85,23 @@ class HistoryBackupTest {
         assertTrue(runCatching { HistoryBackup.read(ByteArrayInputStream(bytes), {}, {}, {}) }.isFailure)
     }
 
+    @Test fun stagingChecksSpaceBeforeWritingEachChunk() {
+        val data = ByteArray(150_000) { 17 }
+        val output = ByteArrayOutputStream()
+        var calls = 0
+        assertTrue(runCatching {
+            HistoryBackup.stage(ByteArrayInputStream(data),output) { written,next ->
+                assertEquals(output.size().toLong(),written)
+                assertTrue(next > 0)
+                require(++calls < 2) { "space exhausted" }
+            }
+        }.isFailure)
+        assertEquals(65_536,output.size())
+        val complete = ByteArrayOutputStream()
+        HistoryBackup.stage(ByteArrayInputStream(data),complete)
+        assertArrayEquals(data,complete.toByteArray())
+    }
+
     @Test fun restoreIdsPrecedeLocalRowsAndOverlapIsRejected() {
         assertEquals(1L, HistoryBackup.firstImportedId(null, 2))
         assertEquals(-1L, HistoryBackup.firstImportedId(1, 2))

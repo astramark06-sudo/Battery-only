@@ -240,7 +240,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         }
     }
 
-    private fun chargingEvidenceReport(now: Long, range: SnapshotRange, curves: MutableList<ChargingProfile.Curve>?): String {
+    private fun chargingEvidenceReport(now: Long, range: SnapshotRange, capture: ((ChargingProfile) -> Unit)?): String {
         val profile = ChargingProfile()
         readableDatabase.rawQuery(
             "SELECT elapsed_realtime_ms,boot_count,battery_percent,battery_status,plug_type,battery_voltage_mv,battery_current_ua,temperature_c,charge_counter_uah,usb_voltage_candidate_uv,usb_current_candidate_ua,timestamp_ms,max_charging_current_ua,max_charging_voltage_uv FROM samples INDEXED BY idx_samples_time WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id",
@@ -254,20 +254,23 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 longOrNull(8),longOrNull(9),longOrNull(10),longOrNull(11),longOrNull(12),longOrNull(13)
             ))
         }
-        curves?.addAll(profile.chartCurves())
+        capture?.invoke(profile)
         return profile.report()
     }
 
     fun historySummary(now: Long = System.currentTimeMillis(), chargingFocus: Boolean = false): String =
         historySummaryInternal(now, chargingFocus, null)
 
-    internal fun chargingDashboard(now: Long): Pair<String, List<ChargingProfile.Curve>> {
-        val curves = mutableListOf<ChargingProfile.Curve>()
-        val report = historySummaryInternal(now, true, curves)
-        return report to curves.toList()
+    internal data class ChargingDashboard(val report: String, val curves: List<ChargingProfile.Curve>,
+        val stages: List<ChargingProfile.Stage>)
+    internal fun chargingDashboard(now: Long): ChargingDashboard {
+        var profile: ChargingProfile? = null
+        val report = historySummaryInternal(now,true) { profile = it }
+        val snapshot = checkNotNull(profile)
+        return ChargingDashboard(report,snapshot.chartCurves(),snapshot.stages())
     }
 
-    private fun historySummaryInternal(now: Long, chargingFocus: Boolean, curves: MutableList<ChargingProfile.Curve>?): String {
+    private fun historySummaryInternal(now: Long, chargingFocus: Boolean, capture: ((ChargingProfile) -> Unit)?): String {
         val windows = listOf(
             "24 HOURS" to 24L * 60 * 60 * 1000,
             "7 DAYS" to 7L * 24 * 60 * 60 * 1000,
@@ -287,7 +290,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         val latestPercent = latestReading?.first
         val summaries = summariseWindows(windows.map { (_, duration) ->
             if (duration == Long.MAX_VALUE) 0L else now - duration
-        }, now, range)
+        }, now, range, !chargingFocus)
         return buildString {
             val total = range.count
             appendLine("BATTERYSCOPE LOCAL HISTORY • RAW SAMPLES RETAINED UNTIL USER DELETES APP DATA")
@@ -345,7 +348,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 }
             }
             appendLine()
-            if (chargingFocus) appendLine(chargingEvidenceReport(now,range,curves))
+            if (chargingFocus) appendLine(chargingEvidenceReport(now,range,capture))
             else appendLine(resourceHistoryReport(now, range))
             appendLine()
             appendLine("=== MOST RECENT CHARGING SESSION (LAST 30 DAYS) ===")
@@ -463,10 +466,10 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
      * window keeps its own previous eligible row, including when wall time
      * moves backwards. This preserves the separate-query interval semantics.
      */
-    private fun summariseWindows(starts: List<Long>, now: Long, range: SnapshotRange): List<Stats> {
+    private fun summariseWindows(starts: List<Long>, now: Long, range: SnapshotRange, includeAppData: Boolean): List<Stats> {
         require(starts.isNotEmpty())
         val accumulators = starts.mapIndexed { index, from ->
-            WindowAccumulator(from, now, index != starts.lastIndex)
+            WindowAccumulator(from, now, index != starts.lastIndex, includeAppData)
         }
         readableDatabase.rawQuery(
             """SELECT timestamp_ms,elapsed_realtime_ms,battery_percent,battery_status,plug_type,charge_counter_uah,screen_on,foreground_package,boot_count,usage_access
@@ -505,7 +508,8 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
     private inner class WindowAccumulator(
         private val from: Long,
         private val now: Long,
-        private val finiteWindow: Boolean
+        private val finiteWindow: Boolean,
+        private val includeAppData: Boolean
     ) {
         val charge = Bucket(); val drain = Bucket()
         val chargeOn = Bucket(); val chargeOff = Bucket()
@@ -541,7 +545,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 if (before.bootCount == null || after.bootCount == null || before.bootCount < 0 || after.bootCount < 0) unknownBootIntervals++
                 gap.accept(dt, eligible, knownReboot)
                 if (eligible) {
-                    val sameApp = RecorderTimeMath.sameForegroundApp(before.screen, after.screen, before.app, after.app,
+                    val sameApp = includeAppData && RecorderTimeMath.sameForegroundApp(before.screen, after.screen, before.app, after.app,
                         before.usageAccess, after.usageAccess)
                     if (sameApp) appTime[after.app] = (appTime[after.app] ?: 0L) + dt
                     if (before.pct != null && after.pct != null) {
