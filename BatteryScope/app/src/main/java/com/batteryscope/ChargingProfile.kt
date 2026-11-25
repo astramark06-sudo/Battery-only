@@ -6,7 +6,8 @@ import java.util.Locale
 internal class ChargingProfile {
     data class Sample(val elapsed: Long, val boot: Int?, val percent: Int?, val state: String,
         val plug: String, val voltageMv: Int?, val currentUa: Long?, val temperatureC: Double?,
-        val counterUah: Long?, val usbVoltage: Long?, val usbCurrent: Long?, val wallMs: Long? = null)
+        val counterUah: Long?, val usbVoltage: Long?, val usbCurrent: Long?, val wallMs: Long? = null,
+        val advertisedCurrentUa: Long? = null, val advertisedVoltageUv: Long? = null)
     class Range {
         var count = 0L
             private set
@@ -65,6 +66,18 @@ internal class ChargingProfile {
     val current = Range()
     val temperature = Range()
     val usablePower = Range()
+    // Optional OEM/framework advertised fields already stored in history.
+    // Positive int-domain values are reported raw, not validated limits.
+    val advertisedCurrent = Range()
+    val advertisedVoltage = Range()
+    var advertisedPairs = 0L
+        private set
+    var advertisedCurrentMissing = 0L
+        private set
+    var advertisedVoltageMissing = 0L
+        private set
+    private fun advertisedValue(value: Long?): Double? =
+        value?.takeIf { it in 1L until Int.MAX_VALUE.toLong() }?.toDouble()
     var samples = 0L
         private set
     var validVoltage = 0L
@@ -146,6 +159,13 @@ internal class ChargingProfile {
         if (currentQuality.usable) validCurrent++
         usablePower.add(BatteryMeasurementQuality.batteryPowerW(s.voltageMv,s.currentUa,s.state,s.plug))
         if (s.usbVoltage != null && s.usbCurrent != null) rawUsbPairs++
+        val advertisedI = advertisedValue(s.advertisedCurrentUa)
+        val advertisedV = advertisedValue(s.advertisedVoltageUv)
+        advertisedCurrent.add(advertisedI)
+        advertisedVoltage.add(advertisedV)
+        if (s.advertisedCurrentUa == null) advertisedCurrentMissing++
+        if (s.advertisedVoltageUv == null) advertisedVoltageMissing++
+        if (advertisedI != null && advertisedV != null) advertisedPairs++
         if (s.percent != null && s.percent in 0..100 && s.counterUah != null) {
             counterPairs++
             if (s.counterUah == s.percent.toLong()*45_000L) nominalMatches++
@@ -179,6 +199,12 @@ internal class ChargingProfile {
         appendLine("Passing these checks does not confirm OEM units, calibration or actual charger input.")
         appendLine("Battery temperature: " + temperature.text("°C") + "; usable ${temperature.count}/$samples")
         appendLine("Battery-side power by Android convention, not calibrated: " + usablePower.text("W",3))
+        appendLine("Optional advertised maximum charging fields (not live or verified electrical limits):")
+        appendLine("  Current (µA-labelled): " + advertisedCurrent.text("raw",0) +
+            "; missing $advertisedCurrentMissing; rejected ${samples-advertisedCurrent.count-advertisedCurrentMissing}")
+        appendLine("  Voltage (µV-labelled): " + advertisedVoltage.text("raw",0) +
+            "; missing $advertisedVoltageMissing; rejected ${samples-advertisedVoltage.count-advertisedVoltageMissing}")
+        appendLine("  Both positive non-sentinel fields recorded together: $advertisedPairs/$samples. No multiplication into watts or inference of negotiated protocol.")
         appendLine("Recorded USB raw candidate pairs: $rawUsbPairs; no verified calibrated charger input watts")
         appendLine("Charge counter exactly SOC × 45,000 µAh: $nominalMatches/$counterPairs paired samples. Matching nominal values are not independent capacity or current measurements.")
         appendLine()

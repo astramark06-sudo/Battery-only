@@ -48,6 +48,7 @@ class RecorderDatabaseAndroidTest {
         db.writableDatabase.execSQL("UPDATE samples SET screen_on=1,usage_access=1,foreground_package='test.example'")
         val before = backup(db)
         val focused = db.historySummary(31000,chargingFocus=true)
+        assertTrue(focused.contains("Both positive non-sentinel fields recorded together: 0/2"))
         assertTrue(focused.contains("MOST RECENT CHARGING SESSION"))
         assertTrue(focused.contains("CHARGING MEASUREMENT EVIDENCE"))
         assertTrue(focused.contains("30–40%: 120.00 pp/h"))
@@ -57,6 +58,23 @@ class RecorderDatabaseAndroidTest {
         assertFalse(focused.contains("test.example"))
         assertFalse(focused.contains("Average battery-side charge rate from counter"))
         assertFalse(focused.contains("Charge-counter observed interval rate:"))
+        assertArrayEquals(before,backup(db))
+    }
+
+    @Test fun advertisedHistoryAndChartUseSameReadOnlySnapshot() = database { db ->
+        sample(db,1000,100,30,true)
+        sample(db,31000,30100,31,true)
+        db.writableDatabase.execSQL("UPDATE samples SET max_charging_current_ua=3000000,max_charging_voltage_uv=5000000 WHERE timestamp_ms=1000")
+        val before = backup(db)
+        val (report, curves) = db.chargingDashboard(31000)
+        assertTrue(report.contains("Both positive non-sentinel fields recorded together: 1/2"))
+        assertTrue(report.contains("Connected: 0.50 min"))
+        assertEquals(1,curves.size)
+        assertEquals(listOf(30,31),curves.first().points().map { it.percent })
+        assertEquals(1000L,curves.first().first.wallMs!!)
+        assertEquals(3_000_000L,curves.first().first.advertisedCurrentUa!!)
+        assertEquals(5_000_000L,curves.first().first.advertisedVoltageUv!!)
+        assertNull(curves.first().last.advertisedCurrentUa)
         assertArrayEquals(before,backup(db))
     }
 

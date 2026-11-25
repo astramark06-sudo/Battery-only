@@ -1,5 +1,12 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Optional advertised limits in charging history
+
+- Report raw positive int-domain optional max-charging-current/voltage fields from existing stored samples, with independent missing/rejected counts and paired coverage. No multiplication into watts; no active USB contract, measured input, calibrated limit or protocol inference. No new telemetry source, hidden API access, schema or export changes.
+- Added JVM regression for unavailable/invalid/positive values and Android read-only database/dashboard snapshot regression (raw history before and after byte-identical).
+- Verified previous chart checkpoint fa15f911: Android CI 45535355961 and signing 45535355859 passed; downloaded artifact 14986912452 ZIP SHA-256 6a37458a649403362b8fc6733ed0ead9a5c8d0f2c38560a7e65e154cbb23a9d8, CRC valid, APK SHA-256 6a0a200bda82026b2ce590adeb70edb09a408a2fc9791aa880da2998d8d0beb3, 1,022,586 bytes; all 89 JVM tests passed in included XML. CI apksigner reports debug signer c05dbe7d07aa0c46952f60fd26040ab664d14fcb1221b994d9ede1d38ad88d01; not independently re-run apksigner, not trusted for installed update.
+- Duration/quality checkpoint 2f5bd75a advanced only after chart CI passed. Its Android CI 45535878462 must finish before advancing this candidate; signing CI 45535878438 passed. Next: check exact head and cumulative CI; if successful, fast-forward this candidate, run new CI, inspect test/artifact results, then verify native plot rendering and physical-device measurements. Trusted signer/device validation and actual input measurements remain blocked. No production history, permissions, signing, application ID, schema/version or private data changes.
+
 ## 2026-11-25 — Observed connected-time partition and electrical quality reasons
 
 - The charging-focused 30-day report now partitions eligible same-source, known-same-boot 1–90s connected intervals into matching CHARGING endpoints, matching FULL endpoints, other known non-charging endpoints, and state-transition/unknown endpoints. Excludes source changes, gaps, invalid timing, unknown boots and reboot intervals. This is observed endpoint coverage, not exact active charging or complete plug-in duration. Counts and durations reconcile; no assumption of state throughout an interval.

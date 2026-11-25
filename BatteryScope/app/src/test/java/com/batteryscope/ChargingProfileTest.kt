@@ -120,6 +120,26 @@ class ChargingProfileTest {
         assertEquals(4L,r.temperature.count)
     }
 
+    @Test fun advertisedLimitsRemainSeparateFromMeasuredPower() {
+        val r = ChargingProfile()
+        r.accept(sample(0,20).copy(advertisedCurrentUa=3_000_000,advertisedVoltageUv=5_000_000))
+        r.accept(sample(30_000,21).copy(advertisedCurrentUa=0,advertisedVoltageUv=9_000_000))
+        r.accept(sample(60_000,22).copy(advertisedCurrentUa=Int.MAX_VALUE.toLong()))
+        r.accept(sample(90_000,23).copy(advertisedCurrentUa=2_000_000,advertisedVoltageUv=-1))
+        r.accept(sample(120_000,24))
+        r.accept(sample(150_000,25,state="FULL").copy(advertisedCurrentUa=1_000_000,advertisedVoltageUv=5_000_000))
+        assertEquals(5L,r.samples)
+        assertEquals(2L,r.advertisedCurrent.count)
+        assertEquals(2L,r.advertisedVoltage.count)
+        assertEquals(1L,r.advertisedCurrentMissing)
+        assertEquals(2L,r.advertisedVoltageMissing)
+        assertEquals(1L,r.advertisedPairs)
+        assertEquals(0L,r.usablePower.count)
+        assertEquals(0L,r.rawUsbPairs)
+        assertTrue(r.report().contains("missing 1; rejected 2"))
+        assertTrue(r.report().contains("missing 2; rejected 1"))
+    }
+
     @Test fun rejectsGapsBootChangesReversalsAndCrossBandJumps() {
         val r = ChargingProfile()
         r.accept(sample(1000,15))
