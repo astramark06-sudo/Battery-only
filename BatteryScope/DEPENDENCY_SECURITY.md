@@ -42,4 +42,20 @@ The individual advisory IDs and scope associations are in the CI artifact. Count
 4. This is a public Maven advisory-match check, not complete supply-chain integrity verification. SDK/native libraries, embedded/shaded dependencies, unmapped product advisories, runner image and dependencies downloaded by actions are not comprehensively covered. Exact action commit pins and disabled shared Gradle caches reduce exposure but do not prove trusted build inputs.
 5. Do not add private history, device identifiers, signing keys or credentials to the advisory inventory or public report. Only public Maven coordinates are submitted.
 
-Current state: batch 8 baseline verified; batch 9 upgrade pending CI when this file was prepared.
+## Batch 9 post-upgrade build evidence — 2026-11-25
+
+Source `659ce163beb3e318911f4e8025e628ca5e8684fe`, Android CI 45663973732, build artifact 15045533863, ZIP SHA-256 `968cae9ec08b684a3e5b9e67104883e5a5c613072f2b7dec3948f688a8612f35`. OSV scan at 2026-11-25T17:24:53.512382+00:00. Resolved KGP 2.4.21, AGP 9.2.1, Gradle 9.4.1, app stdlib 2.4.21. 123 unique coordinates, 6 matched components and 10 distinct IDs, all buildscript. 51 earlier IDs no longer returned, 9 retained, 1 newly returned (Commons Lang). Target GHSA-r937-wjx7-w2jp absent. No runtime/test matches. This demonstrates fewer matches, not comprehensive exploitability or embedded-dependency assurance.
+
+| Build-only coordinate | Remaining IDs | Candidate version |
+|---|---|---|
+| com.google.guava:guava:33.3.1-jre | GHSA-xxph-c9ww-hj94 | 33.7.2-jre |
+| org.apache.commons:commons-lang3:3.16.0 | GHSA-j288-q9x7-2f5v | 3.18.0 |
+| org.bitbucket.b_c:jose4j:0.9.5 | GHSA-3677-xxcr-wjqv | 0.9.6 |
+| org.bouncycastle:bcpkix-jdk18on:1.79 | GHSA-wg6q-6289-32hp | 1.87 |
+| org.bouncycastle:bcprov-jdk18on:1.79 | GHSA-574f-3g2m-x479, GHSA-9pwp-9qqc-pr26, GHSA-c3fc-8qff-9hwx, GHSA-p93r-85wp-75v3, GHSA-qp49-qgx5-5m26 | 1.87 |
+| org.jdom:jdom2:2.0.6 | GHSA-2363-cqg2-863c | 2.0.6.1 |
+
+Remediation references: [Guava advisory](https://github.com/advisories/GHSA-xxph-c9ww-hj94) and [published artifact](https://central.sonatype.com/artifact/com.google.guava/guava/33.7.2-jre); [Commons Lang advisory](https://github.com/advisories/GHSA-j288-q9x7-2f5v); [jose4j advisory](https://github.com/advisories/GHSA-3677-xxcr-wjqv); [JDOM advisory](https://github.com/advisories/GHSA-2363-cqg2-863c); [BC 1.85 security release](https://www.bouncycastle.org/resources/new-release-bouncy-castle-java-1-85/) and [BC 1.87 security release](https://www.bouncycastle.org/resources/new-release-bouncy-castle-java-1-87/). Guava vendor page unavailable during review; fixed version corroborated by CVE-2026-102554 records and Maven Central. BC modules bcprov/bcpkix/bcutil aligned together to the released 1.87 to avoid mismatched crypto dependencies. These are candidate buildscript classpath overrides, not app dependencies or proof of AGP compatibility; selected-version gate plus build, tests, signing and fresh OSV scan required. Do not assume embedded Gradle/SDK libraries change with these overrides.
+
+Batch 9 build/unit/lint passed, instrumentation pending at time of preparation. Batch 10 remains detached until CI gate.
+

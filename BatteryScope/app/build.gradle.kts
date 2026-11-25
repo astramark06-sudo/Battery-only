@@ -73,6 +73,24 @@ tasks.register("reportResolvedDependencies") {
             setOf("com.android.tools.build:gradle:9.2.1")) { "Expected Android Gradle plugin not confirmed" }
         check(byScope.getValue("debugRuntimeClasspath").filter { it.startsWith("org.jetbrains.kotlin:kotlin-stdlib:") }.toSet() ==
             setOf("org.jetbrains.kotlin:kotlin-stdlib:2.4.21")) { "Patched runtime Kotlin version not confirmed" }
+        val requiredBuildCoordinates = setOf(
+            "com.google.guava:guava:33.7.2-jre",
+            "org.apache.commons:commons-lang3:3.18.0",
+            "org.bitbucket.b_c:jose4j:0.9.6",
+            "org.bouncycastle:bcpkix-jdk18on:1.87",
+            "org.bouncycastle:bcprov-jdk18on:1.87",
+            "org.bouncycastle:bcutil-jdk18on:1.87",
+            "org.jdom:jdom2:2.0.6.1"
+        )
+        requiredBuildCoordinates.forEach { expected ->
+            val prefix = expected.substringBeforeLast(":") + ":"
+            check(buildCoordinates.filter { it.startsWith(prefix) }.toSet() == setOf(expected)) {
+                "Expected selected build dependency not confirmed: " + expected
+            }
+            check(byScope.filterKeys { !it.endsWith("BuildscriptClasspath") }.values.flatten().none {
+                it.startsWith(prefix)
+            }) { "Build-only remediation unexpectedly present in app or test dependencies: " + prefix }
+        }
         println("Wrote " + file)
     }
 }
