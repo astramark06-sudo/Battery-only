@@ -1,12 +1,36 @@
 # Current verified acceptance — BatteryScope
 
-## Follow-up — shared release permission policy (CI verification pending)
+## Follow-up — shared release permission policy (verified)
 
-Close the remaining offline-preflight permission-policy gap: previously release mode rejected INTERNET alone, whereas Android CI expected exactly five permissions. Both now call the same fail-closed badging parser; release mode also retains exact versionName, non-debug, certificate and version continuity checks. Reject unexpected/missing/duplicate/conditional/implied/malformed declarations. No Android source, permission, data schema, format, version, signing identity or release change. Two added policy test methods; cumulative verification required for this follow-up. The prior batch 10 evidence remains tied to its exact tested source, not this new commit. No trusted installed signing identity or physical acceptance evidence established. Do not uninstall, merge or release.
+The shared five-permission policy is verified on source `76009d5b8169a63a955b800e28c586efe6af9be0`: Android CI [45669685429](https://github.com/astramark06-sudo/Battery-only/actions/runs/45669685429) and signing/advisory CI [45669685225](https://github.com/astramark06-sudo/Battery-only/actions/runs/45669685225) succeeded. 104 JVM + 37 Android + 19 Python tests = 160 passing tests. Independent archive SHA-256/CRC and XML checks, exact-blob permission parser against actual aapt metadata, RSA v2 signature/protected-content verification and tamper rejection passed. OSV reports zero known matches in 123 resolved Maven coordinates; lint has 67 warnings and zero errors. The application payload is byte-identical to batch 10 (23 ZIP entries and all three protected sections with central-directory offset normalized), but the ephemeral debug certificate differs. Exact current evidence is in [CURRENT_ACCEPTANCE.md](CURRENT_ACCEPTANCE.md). No Android source, permission, data schema, format, version, signing configuration or release change. No trusted installed identity or physical acceptance evidence established. Previous batch records below are historical. Six of seven existing acceptance gates remain verified; do not uninstall, merge or release.
+
+### Latest verified tooling and APK evidence
+
+| Item | Verified result |
+|---|---|
+| Source | `76009d5b8169a63a955b800e28c586efe6af9be0` |
+| PR CI checkout | `1ec4c66b757c3f0c30732e5dbff181ba157e1c33`; identical Git tree `ff1f471c5e4f2d8645ad9502f2bfa56cecf3a700` |
+| Android workflow | [45669685429](https://github.com/astramark06-sudo/Battery-only/actions/runs/45669685429), both jobs successful |
+| Signing/advisory workflow | [45669685225](https://github.com/astramark06-sudo/Battery-only/actions/runs/45669685225), 19 Python tests OK in job log |
+| Build artifact | 15048918141; 1,268,827 bytes; SHA-256 `07c8467c46e39245573840e89edfd54f94f897aa2b8574e18f28548c349404d0` |
+| Instrumentation artifact | 15049691164; 116,475 bytes; SHA-256 `ae3a3c712242de6ff2b0d1d93dda1b942491c37e5d754d431b2769411127b011` |
+| Test XML | 104 JVM in 23 suites, 37 emulator; zero failure/error/skip; 160 total with Python policy tests |
+| APK | 1,187,845 bytes; SHA-256 `6f2b1e4960038f478efa5d85959b1ea8c8c67e74415b78ee737ade5ec3661513`, matches included checksum |
+| APK signer | Single RSA 2048-bit v2 debug signer; cert SHA-256 `dc7b8ddc9e31804df7a3580bc72a739e9744d8040aea504a259fbaba1efdb56b` |
+| Package/version | com.batteryscope 1.15/16, min26, target/compile35, exact five permissions, debug marker |
+| Lint | 67 warnings, 0 errors; unchanged warning ID counts |
+| OSV | 123 resolved coordinates, 0 matches; scan 2026-11-25T17:57:07.618748+00:00; runtime gate and release review no_known_matches |
+
+Independent container checks: both ZIP digests match GitHub metadata and CRCs pass; XML counts parsed directly. Exact verifier blob `fc8d747810de0610da503b88c0639e8ee40245d8` accepts the actual new aapt permission output and rejects the actual debuggable APK for release. Independent restricted RSA v2 verifier checks signed bytes, certificate public key and protected digest across four chunks, rejecting a protected-byte mutation. This supplements CI apksigner, not a general APK verifier or trust establishment.
+
+Compared with batch 10: all 23 uncompressed APK entries match by SHA-256; the three v2-protected regions (pre-signing-block content, central directory and EOCD with central-directory offset normalized) are byte-identical. Concatenated normalized protected regions SHA-256 `87cbdd5eac644596ca996478471edc72f40714af459010fda27684089ca325ff` (comparison digest, not the complete APK hash or signer fingerprint). Resolved dependency inventory files are byte-identical. This is a reproducibility observation for these two verified builds, not a comprehensive reproducible-build or supply-chain assurance claim. The distinct ephemeral signing certificate still prevents treating this candidate as a trusted installed update.
+
+The earlier batch 10 performance measurements, source audit dispositions, and device/policy boundaries remain valid historical evidence for the unchanged payload. The new CI provides cumulative testing of the shared policy change; the next documentation-only checkpoint does not require repeating unchanged builds.
+
 
 Date: 2026-11-25. This is the authoritative current checkpoint for draft PR #3, branch `fix/apk-update-preflight`. All earlier notes and the original 40-item audit retain their historical meaning. Current authorized scope is charging-first, not broad app/resource surveillance. This document records evidence; it does not authorize installation, release, merge, history deletion, hardware modification or new scope.
 
-## Exact evidence
+## Historical batch 10 exact evidence
 
 | Item | Verified result |
 |---|---|

@@ -1,6 +1,10 @@
 # BatteryScope signing and update safety
 
-## Current verified development candidate — 2026-11-25
+## Latest verified development candidate — 2026-11-25
+
+Source `76009d5b8169a63a955b800e28c586efe6af9be0`, Android run 45669685429, debug APK SHA-256 `6f2b1e4960038f478efa5d85959b1ea8c8c67e74415b78ee737ade5ec3661513`, certificate SHA-256 `dc7b8ddc9e31804df7a3580bc72a739e9744d8040aea504a259fbaba1efdb56b`. Independent RSA v2/protected-content and tamper checks passed. The shared release permission policy is verified in CI and against actual aapt output; the real debug marker prevents release acceptance. Despite identical application payload to batch 10, the certificate differs; installed identity is unknown. The existing offline helper locates Build Tools 35.0.0 by default; if using the current CI's Build Tools 36.0.0, use explicit `--apksigner` and `--aapt` paths to the trusted SDK executables. Do not confuse executable discovery with signing trust.
+
+## Historical verified development candidate — batch 10
 
 Batch 10 source `b1811ba9482f741b884a4a706324a7d8ecdede95` generated a debuggable APK with SHA-256 `1b4ede7edad2e12d5214392ee1424323b077dd7c5275ba1ab893d5ade848ff9f`, certificate SHA-256 `d11b8a2e438e7495ed644571f2b7b32f1c9eabe8a069cf800f49edc553d5672e`. Independently verified RSA v2 signature and protected content; deliberate mutation rejected. The certificate differs from the documented historical v1.14 and v1.15 debug certificates. The actual installed signer is still unknown; no safe update or release is established. See [CURRENT_ACCEPTANCE.md](CURRENT_ACCEPTANCE.md).
 
