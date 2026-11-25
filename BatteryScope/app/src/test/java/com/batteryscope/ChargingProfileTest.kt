@@ -76,6 +76,50 @@ class ChargingProfileTest {
         assertEquals(r.latestCurve,curves.first())
     }
 
+    @Test fun connectedCoveragePartitionsWithoutCountingUnknownTime() {
+        val r = ChargingProfile()
+        r.accept(sample(0,90))
+        r.accept(sample(30_000,91))
+        r.accept(sample(60_000,100,state="FULL"))
+        r.accept(sample(90_000,100,state="FULL"))
+        r.accept(sample(120_000,100,state="NOT_CHARGING"))
+        r.accept(sample(150_000,99,state="DISCHARGING"))
+        r.accept(sample(180_000,99,state="UNKNOWN"))
+        r.accept(sample(210_000,99,state="UNKNOWN"))
+        r.accept(sample(310_000,99))
+        r.accept(sample(340_000,99,boot=null))
+        r.accept(sample(370_000,99,boot=10))
+        r.accept(sample(400_000,99,boot=10,plug="USB"))
+        r.accept(sample(430_000,99,boot=10,plug="NONE",state="DISCHARGING"))
+        r.accept(sample(460_000,99,boot=10,plug="NONE",state="DISCHARGING"))
+        assertEquals(210_000L,r.connectedMs())
+        assertEquals(30_000L,r.observedMs(ChargingProfile.ConnectedState.CHARGING))
+        assertEquals(30_000L,r.observedMs(ChargingProfile.ConnectedState.FULL))
+        assertEquals(30_000L,r.observedMs(ChargingProfile.ConnectedState.OTHER))
+        assertEquals(120_000L,r.observedMs(ChargingProfile.ConnectedState.TRANSITION_OR_UNKNOWN))
+        assertEquals(5L,r.excludedConnectedIntervals)
+        assertTrue(r.report().contains("Connected: 3.50 min"))
+    }
+
+    @Test fun qualityReasonsReconcileToChargingSampleCount() {
+        val r = ChargingProfile()
+        r.accept(sample(0,20))
+        r.accept(sample(30_000,21).copy(voltageMv=null,currentUa=null,temperatureC=null))
+        r.accept(sample(60_000,22).copy(voltageMv=4000,currentUa=100_000L))
+        r.accept(sample(90_000,23).copy(voltageMv=4000,currentUa=0L))
+        r.accept(sample(120_000,24).copy(currentUa=Long.MIN_VALUE))
+        r.accept(sample(150_000,25,state="FULL"))
+        assertEquals(5L,r.samples)
+        assertEquals(5L,r.voltageQualityCounts().values.sum())
+        assertEquals(5L,r.currentQualityCounts().values.sum())
+        assertEquals(2L,r.voltageQualityCounts()["OUT_OF_RANGE_EXPECTED_MILLIVOLTS"]!!)
+        assertEquals(1L,r.currentQualityCounts()["SIGN_CONFLICT_WITH_ANDROID_CONVENTION"]!!)
+        assertEquals(1L,r.currentQualityCounts()["UNAVAILABLE_OR_SENTINEL"]!!)
+        assertEquals(1L,r.currentQualityCounts()["ZERO_OR_IDLE"]!!)
+        assertEquals(1L,r.usablePower.count)
+        assertEquals(4L,r.temperature.count)
+    }
+
     @Test fun rejectsGapsBootChangesReversalsAndCrossBandJumps() {
         val r = ChargingProfile()
         r.accept(sample(1000,15))

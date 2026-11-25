@@ -1,5 +1,10 @@
 # BatteryScope 1.15 — Realme Narzo 20 Pro (RMX2161)
 
+## 2026-11-25 — Observed connected-time partition and electrical quality reasons
+
+- The charging-focused 30-day report now partitions eligible same-source, known-same-boot 1–90s connected intervals into matching CHARGING endpoints, matching FULL endpoints, other known non-charging endpoints, and state-transition/unknown endpoints. Excludes source changes, gaps, invalid timing, unknown boots and reboot intervals. This is observed endpoint coverage, not exact active charging or complete plug-in duration. Counts and durations reconcile; no assumption of state throughout an interval.
+- Voltage/current assessment reason counts reconcile to the number of eligible charging observations. Temperature coverage explicitly distinguishes usable and absent/invalid samples. No guessed scaling, polarity correction, charger input inference, new collection, permissions, schema/version/signing changes or history mutation. Two JVM regression tests added. New Android CI required; chart checkpoint fa15f911 must finish its cumulative CI before branch advancement. Physical device and safe update validation remain open.
+
 ## 2026-11-25 — Native recent charging observation plots
 
 - Added native SOC and battery-temperature scatter plots for up to eight recent eligible continuous charging segments, newest first, with a segment selector and accessible numeric checkpoint table. Observed points only; no interpolation, connecting lines, assumed watts, or joining across recording gaps. A single sample is centered on the elapsed-time axis. Missing temperature is explicitly unavailable. Each segment retains at most 16 points. Text report and plots use the same bounded database snapshot and worker query; no extra scan or new stored fields.

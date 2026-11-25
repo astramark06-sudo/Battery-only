@@ -79,11 +79,44 @@ internal class ChargingProfile {
         private set
     var omittedIntervals = 0L
         private set
+    enum class ConnectedState { CHARGING, FULL, OTHER, TRANSITION_OR_UNKNOWN }
+    private val connectedDurations = LongArray(ConnectedState.values().size)
+    fun observedMs(state: ConnectedState): Long = connectedDurations[state.ordinal]
+    fun connectedMs(): Long = connectedDurations.sum()
+    var excludedConnectedIntervals = 0L
+        private set
+    private val voltageStatuses = sortedMapOf<String,Long>()
+    private val currentStatuses = sortedMapOf<String,Long>()
+    private fun tally(map: MutableMap<String,Long>, status: String) {
+        map[status] = (map[status] ?: 0L) + 1L
+    }
+    fun voltageQualityCounts(): Map<String,Long> = voltageStatuses.toMap()
+    fun currentQualityCounts(): Map<String,Long> = currentStatuses.toMap()
+    private fun classifyConnected(state: String): ConnectedState = when (state) {
+        "CHARGING" -> ConnectedState.CHARGING
+        "FULL" -> ConnectedState.FULL
+        "NOT_CHARGING", "DISCHARGING" -> ConnectedState.OTHER
+        else -> ConnectedState.TRANSITION_OR_UNKNOWN
+    }
+    private fun observeConnection(before: Sample?, after: Sample) {
+        if (before == null || (!connected(before.plug) && !connected(after.plug))) return
+        if (before.plug != after.plug || !connected(after.plug) ||
+            before.elapsed < 0L || after.elapsed < 0L ||
+            !RecorderTimeMath.isRateInterval(after.elapsed-before.elapsed,before.boot,after.boot)) {
+            excludedConnectedIntervals++
+            return
+        }
+        val a = classifyConnected(before.state)
+        val b = classifyConnected(after.state)
+        val state = if (a == b) a else ConnectedState.TRANSITION_OR_UNKNOWN
+        connectedDurations[state.ordinal] += after.elapsed-before.elapsed
+    }
     private var previous: Sample? = null
     private fun connected(plug: String) = plug in setOf("AC","USB","WIRELESS","DOCK")
     fun accept(s: Sample) {
         val before = previous
         previous = s
+        observeConnection(before,s)
         if (s.state != "CHARGING" || !connected(s.plug)) return
         samples++
         voltage.add(s.voltageMv?.toDouble())
@@ -105,8 +138,12 @@ internal class ChargingProfile {
                 }
             }
         }
-        if (BatteryMeasurementQuality.voltage(s.voltageMv).usable) validVoltage++
-        if (BatteryMeasurementQuality.current(s.currentUa,s.state,s.plug).usable) validCurrent++
+        val voltageQuality = BatteryMeasurementQuality.voltage(s.voltageMv)
+        val currentQuality = BatteryMeasurementQuality.current(s.currentUa,s.state,s.plug)
+        tally(voltageStatuses,voltageQuality.status)
+        tally(currentStatuses,currentQuality.status)
+        if (voltageQuality.usable) validVoltage++
+        if (currentQuality.usable) validCurrent++
         usablePower.add(BatteryMeasurementQuality.batteryPowerW(s.voltageMv,s.currentUa,s.state,s.plug))
         if (s.usbVoltage != null && s.usbCurrent != null) rawUsbPairs++
         if (s.percent != null && s.percent in 0..100 && s.counterUah != null) {
@@ -135,10 +172,24 @@ internal class ChargingProfile {
         appendLine("Android CHARGING with known connected source: $samples samples")
         appendLine("Raw battery voltage (mV-labelled): " + voltage.text("raw",0) + "; expected range passed $validVoltage/$samples")
         appendLine("Raw battery current (µA-labelled): " + current.text("raw",0) + "; direction/range passed $validCurrent/$samples")
-        appendLine("Battery temperature: " + temperature.text("°C"))
+        fun qualityText(counts: Map<String,Long>): String =
+            if (counts.isEmpty()) "no charging samples" else counts.entries.joinToString("; ") { "${it.key}: ${it.value}" }
+        appendLine("Voltage assessment counts: " + qualityText(voltageStatuses))
+        appendLine("Current assessment counts: " + qualityText(currentStatuses))
+        appendLine("Passing these checks does not confirm OEM units, calibration or actual charger input.")
+        appendLine("Battery temperature: " + temperature.text("°C") + "; usable ${temperature.count}/$samples")
         appendLine("Battery-side power by Android convention, not calibrated: " + usablePower.text("W",3))
         appendLine("Recorded USB raw candidate pairs: $rawUsbPairs; no verified calibrated charger input watts")
         appendLine("Charge counter exactly SOC × 45,000 µAh: $nominalMatches/$counterPairs paired samples. Matching nominal values are not independent capacity or current measurements.")
+        appendLine()
+        appendLine("Observed connected time (last 30 days; minutes of eligible sampled intervals):")
+        fun minutes(ms: Long) = String.format(Locale.US,"%.2f",ms/60_000.0)
+        appendLine("Connected: " + minutes(connectedMs()) + " min")
+        appendLine("  CHARGING at both endpoints: " + minutes(observedMs(ConnectedState.CHARGING)) + " min")
+        appendLine("  FULL at both endpoints: " + minutes(observedMs(ConnectedState.FULL)) + " min")
+        appendLine("  Other known non-charging endpoints: " + minutes(observedMs(ConnectedState.OTHER)) + " min")
+        appendLine("  State transition or unknown endpoints: " + minutes(observedMs(ConnectedState.TRANSITION_OR_UNKNOWN)) + " min")
+        appendLine("Connection-related intervals excluded: $excludedConnectedIntervals (source changes, invalid timing, gaps or unknown/reboot identity). Matching sampled endpoints do not establish continuous state; this is observed coverage, not full plug-in duration. Zero coverage means no eligible observed time.")
         appendLine("Observed SOC-band speed (percentage points/hour; no current or watts inferred):")
         bands.forEachIndexed { i, band ->
             appendLine("  " + i*10 + "–" + (i+1)*10 + "%: " +
