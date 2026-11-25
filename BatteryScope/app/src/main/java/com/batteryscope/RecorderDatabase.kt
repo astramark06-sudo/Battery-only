@@ -449,7 +449,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
     private fun isRateInterval(before: Row, after: Row, interval: Long): Boolean =
         RecorderTimeMath.isRateInterval(interval, before.bootCount, after.bootCount)
 
-    private fun charging(row: Row) = row.state == "CHARGING"
+    private fun charging(row: Row) = row.state == "CHARGING" && row.plug in setOf("AC","USB","WIRELESS","DOCK")
     private fun discharging(row: Row) = BatteryStateMath.discharging(row.state, row.plug)
 
     private fun add(bucket: Bucket, duration: Long, pct: Double, counter: Long?) {
@@ -550,7 +550,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                         val counterGain = CounterDelta.gain(counterDelta)
                         val counterLoss = CounterDelta.loss(counterDelta)
                         val bothPlugged = BatteryStateMath.connected(before.plug) && BatteryStateMath.connected(after.plug)
-                        val androidReportsCharging = charging(before) && charging(after)
+                        val androidReportsCharging = before.state == "CHARGING" && after.state == "CHARGING"
                         if ((bothPlugged || androidReportsCharging) && delta < 0.0) {
                             // Some ROMs report EXTRA_PLUGGED=NONE while BATTERY_STATUS remains CHARGING.
                             add(pluggedDrain, dt, -delta, counterLoss)
@@ -560,7 +560,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                                 if (counterLoss != null) appPluggedDrainCounterMah[after.app] =
                                     (appPluggedDrainCounterMah[after.app] ?: 0.0) + counterLoss / 1000.0
                             }
-                        } else if (charging(before) && charging(after) && delta >= 0.0) {
+                        } else if (charging(before) && charging(after) && before.plug == after.plug && delta >= 0.0 && before.pct < 100) {
                             add(charge, dt, delta, counterGain)
                             if (before.screen == after.screen) add(if (after.screen) chargeOn else chargeOff, dt, delta, counterGain)
                             if (sameApp) {
@@ -649,14 +649,14 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             val current = active
             val matches = if (wantCharge) charging(row) else discharging(row)
             if (matches) {
-                if (current != null && isRateInterval(current.last, row, sampleIntervalMs(current.last, row))) {
+                if (current != null && current.last.plug == row.plug && isRateInterval(current.last, row, sampleIntervalMs(current.last, row))) {
                     current.accept(row)
                 } else {
                     closeRun()
                     active = SessionAccumulator(row, wantCharge)
                 }
             } else {
-                if (current != null && wantCharge && row.state == "FULL" && BatteryStateMath.connected(row.plug) &&
+                if (current != null && wantCharge && row.state == "FULL" && current.last.plug == row.plug && BatteryStateMath.connected(row.plug) &&
                     isRateInterval(current.last, row, sampleIntervalMs(current.last, row))) current.accept(row)
                 closeRun()
             }

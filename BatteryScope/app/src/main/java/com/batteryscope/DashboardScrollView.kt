@@ -44,6 +44,10 @@ internal fun compactChargingStages(report: String): String {
                 ?.substringAfter(": ") else null
             append(row)
             if (completed != null && completed != "unavailable") append("\n  Complete spans: $completed")
+            val skipped = stageLines.getOrNull(rowIndex+3)?.takeIf {
+                rowIndex >= 0 && it.startsWith("Skipped-boundary spans:")
+            }?.substringAfter(": ")
+            if (skipped != null && skipped != "unavailable") append("\n  Bounded spans: $skipped")
             if (index != ranges.lastIndex) appendLine()
         }
     }

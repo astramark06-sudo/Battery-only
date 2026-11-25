@@ -383,6 +383,24 @@ class RecorderDatabaseAndroidTest {
         assertEquals(60L,number(db.readableDatabase,"SELECT COUNT(*) FROM samples"))
     }
 
+    @Test fun chargingSessionsDoNotJoinDifferentSourcesOrContradictoryPlugState() = database { db ->
+        sample(db,1000,1000,20,true)
+        sample(db,31000,31000,21,true)
+        sample(db,61000,61000,22,true)
+        sample(db,91000,91000,23,true)
+        sample(db,121000,121000,24,true)
+        db.writableDatabase.execSQL("UPDATE samples SET plug_type='USB' WHERE timestamp_ms IN (61000,91000)")
+        db.writableDatabase.execSQL("UPDATE samples SET plug_type='NONE' WHERE timestamp_ms=121000")
+        val before = backup(db)
+        val report = db.historySummary(121000,chargingFocus=true)
+        val recent = report.substringAfter("=== RECENT CHARGING SESSIONS (LAST 30 DAYS) ===\n").substringBefore("\n\n===")
+        assertTrue(recent.contains("22%→23%"))
+        assertTrue(recent.contains("20%→21%"))
+        assertFalse(recent.contains("20%→24%"))
+        assertFalse(recent.contains("24%"))
+        assertArrayEquals(before,backup(db))
+    }
+
     @Test fun missingSessionPercentageAndReachedThresholdAreReportedAccurately() = database { db ->
         val start = 2_000_000_000_000L
         sample(db,start,100_000,99,true)

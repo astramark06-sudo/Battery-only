@@ -96,7 +96,30 @@ internal class ChargingProfile {
     val phaseBands = List(3) { Band() }
     val phaseTemperatures = List(3) { Range() }
     val completedPhaseMinutes = List(3) { Range() }
-    private val phaseStart = arrayOfNulls<Long>(3)
+    private data class Crossing(val earliest: Long, val latest: Long)
+    private val phaseStart = arrayOfNulls<Crossing>(3)
+    val bracketedPhaseLowerMinutes = List(3) { Range() }
+    val bracketedPhaseUpperMinutes = List(3) { Range() }
+    var fullEndpointSpans = 0L
+        private set
+    private val evidenceChanges = ArrayDeque<String>()
+    private var lastEvidence: List<String>? = null
+    private var evidenceCount = 0L
+    private val sourceBands = linkedMapOf<String,Band>()
+    private fun observeEvidence(s: Sample) {
+        val values = listOf(s.plug,s.state,
+            advertisedValue(s.advertisedCurrentUa)?.toLong()?.toString() ?: "unavailable",
+            advertisedValue(s.advertisedVoltageUv)?.toLong()?.toString() ?: "unavailable")
+        if (values != lastEvidence) {
+            evidenceCount++
+            if (evidenceChanges.size == 24) evidenceChanges.removeFirst()
+            val time = s.wallMs?.let {
+                java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z",Locale.US).format(java.util.Date(it))
+            } ?: "wall time unavailable"
+            evidenceChanges.addLast("$time • ${s.plug}/${s.state} • advertised µA=${values[2]}, µV=${values[3]}")
+            lastEvidence = values
+        }
+    }
     var omittedPhaseIntervals = 0L
         private set
 
@@ -105,35 +128,52 @@ internal class ChargingProfile {
         val valid = after.state == "CHARGING" && connected(after.plug) &&
             hi != null && hi in 0..100 && after.elapsed >= 0L &&
             after.boot != null && after.boot >= 0
+        val terminalFull = after.state == "FULL" && hi == 100 && connected(after.plug) &&
+            after.elapsed >= 0L && after.boot != null && after.boot >= 0
         val lo = before?.percent
-        val adjacent = valid && before != null && lo != null && lo in 0..100 &&
+        val adjacent = (valid || terminalFull) && before != null && lo != null && lo in 0..100 &&
             hi!! >= lo && before.state == "CHARGING" && before.plug == after.plug &&
             before.elapsed >= 0L &&
             RecorderTimeMath.isRateInterval(after.elapsed-before.elapsed,before.boot,after.boot)
-        if (adjacent) {
+        if (adjacent && valid) {
             val low = checkNotNull(lo)
             val high = checkNotNull(hi)
             val prior = checkNotNull(before)
-            val index = phaseBounds.indexOfFirst { (a,b) -> low >= a && low < b }
-                .let { if (low == 100) 2 else it }
-            if (index >= 0 && high <= phaseBounds[index].second) {
-                phaseBands[index].add(after.elapsed-prior.elapsed,high-low)
-            } else omittedPhaseIntervals++
-        } else if (before != null && before.state == "CHARGING" &&
+            if (low < 100) {
+                sourceBands.getOrPut(after.plug) { Band() }.add(after.elapsed-prior.elapsed,high-low)
+                val index = phaseBounds.indexOfFirst { (a,b) -> low >= a && low < b }
+                if (index >= 0 && high <= phaseBounds[index].second) {
+                    phaseBands[index].add(after.elapsed-prior.elapsed,high-low)
+                } else omittedPhaseIntervals++
+            }
+        } else if (!adjacent && before != null && before.state == "CHARGING" &&
             after.state == "CHARGING" && connected(after.plug) && before.plug == after.plug) {
             omittedPhaseIntervals++
         }
-        phaseBounds.forEachIndexed { i,(start,end) ->
-            if (!adjacent) phaseStart[i] = null
-            val began = phaseStart[i]
-            if (began != null && hi != null && hi >= end) {
-                if (adjacent && hi == end && after.elapsed > began) {
-                    completedPhaseMinutes[i].add((after.elapsed-began)/60_000.0)
-                }
-                phaseStart[i] = null
+        phaseBounds.forEachIndexed { k,(start,end) ->
+            if (!adjacent) phaseStart[k] = null
+            if (phaseStart[k] == null && valid) {
+                if (hi == start) phaseStart[k] = Crossing(after.elapsed,after.elapsed)
+                else if (adjacent && lo!! < start && hi!! > start)
+                    phaseStart[k] = Crossing(checkNotNull(before).elapsed,after.elapsed)
             }
-            // Exact observed start only; repeated equal readings keep the first.
-            if (valid && hi == start && phaseStart[i] == null) phaseStart[i] = after.elapsed
+            val began = phaseStart[k]
+            if (began != null && hi != null && hi >= end) {
+                if (adjacent && after.elapsed > began.earliest) {
+                    if (began.earliest == began.latest && hi == end) {
+                        completedPhaseMinutes[k].add((after.elapsed-began.latest)/60_000.0)
+                        if (terminalFull) fullEndpointSpans++
+                    } else {
+                        val finishEarliest = if (hi == end) after.elapsed else checkNotNull(before).elapsed
+                        val lower = (finishEarliest-began.latest).coerceAtLeast(0L)
+                        val upper = after.elapsed-began.earliest
+                        bracketedPhaseLowerMinutes[k].add(lower/60_000.0)
+                        bracketedPhaseUpperMinutes[k].add(upper/60_000.0)
+                        if (terminalFull) fullEndpointSpans++
+                    }
+                }
+                phaseStart[k] = null
+            }
         }
     }
     val voltage = Range()
@@ -203,6 +243,7 @@ internal class ChargingProfile {
     fun accept(s: Sample) {
         val before = previous
         previous = s
+        observeEvidence(s)
         observeConnection(before,s)
         observePhases(before,s)
         if (s.state != "CHARGING" || !connected(s.plug)) return
@@ -258,6 +299,7 @@ internal class ChargingProfile {
             omittedIntervals++
             return
         }
+        if (lo == 100) return // Time after the first 100% observation is not stage progress.
         val band = minOf(lo/10,9)
         if (hi > (band+1)*10) {
             omittedIntervals++
@@ -302,9 +344,23 @@ internal class ChargingProfile {
                 (band.rate()?.let { String.format(Locale.US,"%.2f pp/h • +%d points • %.2f min observed",it,band.gained,band.ms/60_000.0) } ?: "insufficient observations"))
             appendLine("    Temperature: " + phaseTemperatures[i].text("°C"))
             appendLine("    Completed exact-boundary spans: " + completedPhaseMinutes[i].text("min",2))
+            val lower = bracketedPhaseLowerMinutes[i].bounds()?.first
+            val upper = bracketedPhaseUpperMinutes[i].bounds()?.second
+            appendLine("    Skipped-boundary spans: " + if (lower != null && upper != null)
+                String.format(Locale.US,"%.2f–%.2f min possible envelope (%d spans)",lower,upper,bracketedPhaseLowerMinutes[i].count)
+                else "unavailable")
         }
         appendLine("Stage speeds use eligible nondecreasing intervals wholly within each stage, including jumps across finer 10% bands. Cross-stage jumps or invalid adjacent same-source charging intervals omitted: $omittedPhaseIntervals. Temperature samples use the stage containing the observed SOC; 100% belongs to the final stage.")
-        appendLine("Completed spans require observed start and end percentages and uninterrupted eligible CHARGING samples; no interpolation, estimates or merging across gaps. Missing full spans are unavailable, not zero. Do not deliberately drain the battery to collect a span.")
+        appendLine("Exact-boundary spans measure elapsed time between recorded boundary samples, not exact physical crossing times. Skipped boundaries use adjacent observation bounds; envelope is the smallest lower and largest upper bound across completed spans, not an average or interpolation. Gaps, reversals and source changes reset spans. Same-source FULL at 100% can finish a span ($fullEndpointSpans spans), but contributes no active charging rate. Time at 100% after first observation excluded from stage rates. Missing spans are unavailable, not zero.")
+        appendLine("=== OBSERVED CHARGING SOURCE COMPARISON (LAST 30 DAYS) ===")
+        if (sourceBands.isEmpty()) appendLine("No eligible charging intervals.")
+        sourceBands.forEach { (source,band) ->
+            appendLine(String.format(Locale.US,"%s: %.2f pp/h • +%d points • %.2f observed min",source,band.rate(),band.gained,band.ms/60_000.0))
+        }
+        appendLine("Android source category is not a physical charger identity. Different adapters of the same type can be combined; rates depend on SOC, temperature and phone load.")
+        appendLine("=== CHARGER / PHONE REPORTED STATE CHANGES (LAST 30 DAYS) ===")
+        appendLine("Showing latest ${evidenceChanges.size}/$evidenceCount observed state/advertised-limit changes in recording order, including initial observation. Missing values do not establish a protocol change. Sampled evidence only, not negotiation packets or active contracts.")
+        evidenceChanges.forEach { appendLine(it) }
         appendLine("Observed SOC-band speed (percentage points/hour; no current or watts inferred):")
         bands.forEachIndexed { i, band ->
             appendLine("  " + i*10 + "–" + (i+1)*10 + "%: " +

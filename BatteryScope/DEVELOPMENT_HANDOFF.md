@@ -1,5 +1,12 @@
 # BatteryScope — persistent development handoff
 
+## 2026-11-25 — Audit remediation batch 1 (charging completion, evidence, icon)
+
+- Previous source 0146c945 passed Android CI 45597784906 (97 JVM, 25 emulator) and signing CI 45597784793 (11 policy tests). Audit checkpoint PR comment 7161471272.
+- Corrected final 100% FULL endpoint handling for stage spans without counting transition as confirmed active rate; exclude post-100% plateau; add bounded durations for skipped stage boundaries, retain exact observed spans and never interpolate. Same-source, same-known-boot, eligible intervals only. Historical report source continuity corrected; contradictory CHARGING/NONE kept in decline diagnostics rather than positive charge rate. Added bounded 24-change sampled source/state/advertised-limit timeline and Android-source-category comparison, explicitly not physical adapter identity or proprietary packets. Existing live report remains read-only.
+- Replaced launcher battery/lightning icon (normal and round adaptive resources share foreground; added Android 13 monochrome variants). Min SDK 26; no older legacy icon needed. Added focused JVM and Android regressions, dashboard bounded-span summary. New CI pending. No schema, history, export, permissions, app identity or signing changes.
+- Next: verify this exact cumulative CI/artifacts; address failures before further scoped changes. Remaining audit work: typed dashboard data and integration tests, recorder pause/overhead and long-history scaling, import preflight/privacy, sentinel/cache consistency, build reproducibility/dependency checks, docs consolidation. Trusted installed signer and actual electrical/device validation remain external gates. No merge/release or forced discharge, hardware changes or uninstall.
+
 ## 2026-11-25 — Compact charging dashboard and passive-refresh scroll fix
 
 - User reported excessive text and automatic scrolling on refresh. Previous activity rewrote multiple large selectable TextViews every two seconds. Main screen now shows concise battery/charger summary, three charging stages and native graphs. Full readings, raw charger/phone communication evidence, quality, history, capacity, recorder status and measurement rules remain accessible through explicit snapshot dialogs. Open dialogs do not receive live text updates; reopen to refresh. Export/backup/import/settings controls and operation messages remain behind a user-controlled tools section. Chart checkpoints collapse by default.

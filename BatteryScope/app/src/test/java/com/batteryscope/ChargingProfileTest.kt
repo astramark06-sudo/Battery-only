@@ -241,6 +241,46 @@ class ChargingProfileTest {
         assertEquals(0L,d.completedPhaseMinutes[2].count)
     }
 
+    @Test fun fullEndpointCompletesFinalStageWithoutAddingActiveRateOrPlateau() {
+        val r = ChargingProfile()
+        r.accept(sample(0,80))
+        r.accept(sample(30_000,90))
+        r.accept(sample(60_000,100,state="FULL"))
+        r.accept(sample(90_000,100,state="FULL"))
+        assertEquals(1L,r.completedPhaseMinutes[2].count)
+        assertEquals(1.0 to 1.0,r.completedPhaseMinutes[2].bounds())
+        assertEquals(1L,r.fullEndpointSpans)
+        assertEquals(30_000L,r.phaseBands[2].ms)
+        val p = ChargingProfile()
+        p.accept(sample(0,99))
+        p.accept(sample(30_000,100))
+        p.accept(sample(60_000,100))
+        assertEquals(30_000L,p.phaseBands[2].ms)
+        assertEquals(30_000L,p.bands[9].ms)
+    }
+
+    @Test fun skippedBoundariesAreBracketedAndNeverCrossGapsOrSourceChanges() {
+        val r = ChargingProfile()
+        listOf(19,21,79,81,99,100).forEachIndexed { i,level ->
+            r.accept(sample(i*30_000L,level,state=if(level==100) "FULL" else "CHARGING"))
+        }
+        assertEquals(0L,r.completedPhaseMinutes[1].count)
+        assertEquals(1L,r.bracketedPhaseLowerMinutes[1].count)
+        assertEquals(0.5 to 0.5,r.bracketedPhaseLowerMinutes[1].bounds())
+        assertEquals(1.5 to 1.5,r.bracketedPhaseUpperMinutes[1].bounds())
+        assertEquals(1L,r.bracketedPhaseLowerMinutes[2].count)
+        assertEquals(1.0 to 1.0,r.bracketedPhaseLowerMinutes[2].bounds())
+        assertEquals(1.5 to 1.5,r.bracketedPhaseUpperMinutes[2].bounds())
+        val g = ChargingProfile()
+        g.accept(sample(0,19))
+        g.accept(sample(30_000,21))
+        g.accept(sample(60_000,79,plug="USB"))
+        g.accept(sample(90_000,81,plug="USB"))
+        assertEquals(0L,g.bracketedPhaseLowerMinutes[1].count)
+        assertTrue(r.report().contains("Android source category is not a physical charger identity"))
+        assertTrue(r.report().contains("CHARGER / PHONE REPORTED STATE CHANGES"))
+    }
+
     @Test fun rejectsGapsBootChangesReversalsAndCrossBandJumps() {
         val r = ChargingProfile()
         r.accept(sample(1000,15))
