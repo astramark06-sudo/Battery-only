@@ -19,6 +19,7 @@ internal class ChargingProfile {
             min = minOf(min ?: v,v)
             max = maxOf(max ?: v,v)
         }
+        fun bounds(): Pair<Double,Double>? = min?.let { it to checkNotNull(max) }
         fun text(unit: String, decimals: Int = 1): String =
             if (count == 0L) "unavailable" else String.format(Locale.US,"%.${decimals}f to %.${decimals}f %s (%d samples)",min,max,unit,count)
     }
@@ -37,6 +38,13 @@ internal class ChargingProfile {
     class Curve(first: Sample) {
         private val retained = mutableListOf(0L to first)
         private var stride = 1L
+        private val observedTemperatures = Range().apply {
+            add(first.temperatureC?.takeIf { it in -100.0..100.0 })
+        }
+        val observedTemperatureCount: Long get() = observedTemperatures.count
+        fun observedTemperatureBounds(): Pair<Double,Double>? = observedTemperatures.bounds()
+        fun observedTemperatureText(): String = observedTemperatures.text("°C") +
+            "; usable ${observedTemperatures.count}/$count"
         var count = 1L
             private set
         var last = first
@@ -44,6 +52,7 @@ internal class ChargingProfile {
         val first: Sample get() = retained.first().second
         fun add(sample: Sample) {
             val index = count++
+            observedTemperatures.add(sample.temperatureC?.takeIf { it in -100.0..100.0 })
             last = sample
             if (index % stride == 0L) retained.add(index to sample)
             if (retained.size > 15) {
@@ -255,6 +264,7 @@ internal class ChargingProfile {
         else {
             val points = curve.points()
             appendLine("${curve.first.plug} • ${curve.count} observations • showing ${points.size} actual checkpoints, including first and last.")
+            appendLine("Full observed segment temperature: " + curve.observedTemperatureText() + " (before chart thinning)")
             appendLine("Elapsed min | SOC | Battery temperature")
             points.forEach { point ->
                 val temp = point.temperatureC?.takeIf { it in -100.0..100.0 }?.let {

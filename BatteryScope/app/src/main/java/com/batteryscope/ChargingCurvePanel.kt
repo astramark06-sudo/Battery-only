@@ -86,14 +86,19 @@ internal class ChargingCurvePanel(context: Context) : LinearLayout(context) {
         val temperatures = points.mapNotNull { s ->
             s.temperatureC?.takeIf { it in -100.0..100.0 }?.let { x(s) to it }
         }
+        val fullTemperature = "All observed segment temperatures: " + c.observedTemperatureText() +
+            " (before thinning)"
         if (temperatures.isEmpty()) {
-            tempLabel.text = "Battery temperature • no usable retained readings"
+            tempLabel.text = "Battery temperature • no usable retained readings\n" + fullTemperature
             tempPlot.visibility = View.GONE
             tempPlot.setDots(emptyList())
         } else {
-            val lo = floor(temperatures.minOf { it.second }/5.0)*5.0
-            val hi = maxOf(lo+5.0,ceil(temperatures.maxOf { it.second }/5.0)*5.0)
-            tempLabel.text = String.format(Locale.US,"Battery temperature • bottom %.0f °C, top %.0f °C • elapsed time →",lo,hi)
+            // Scale against every usable segment observation, not only retained dots.
+            val bounds = checkNotNull(c.observedTemperatureBounds())
+            val lo = floor(bounds.first/5.0)*5.0
+            val hi = maxOf(lo+5.0,ceil(bounds.second/5.0)*5.0)
+            tempLabel.text = String.format(Locale.US,"Battery temperature • bottom %.0f °C, top %.0f °C • elapsed time →",lo,hi) +
+                "\n" + fullTemperature
             tempPlot.visibility = View.VISIBLE
             tempPlot.setDots(temperatures.map { it.first to ((it.second-lo)/(hi-lo)).toFloat() })
         }

@@ -39,6 +39,38 @@ class ChargingProfileTest {
         assertTrue(r.report().contains("1000 observations"))
     }
 
+    @Test fun fullSegmentTemperatureRangeSurvivesThinningAndInvalidValues() {
+        val r = ChargingProfile()
+        repeat(64) { i ->
+            val temperature = when (i) {
+                1 -> 25.0
+                3 -> 45.0
+                2 -> null
+                4 -> 150.0
+                5 -> Double.NaN
+                else -> 35.0
+            }
+            r.accept(sample(i*30_000L,20).copy(temperatureC=temperature))
+        }
+        val c = checkNotNull(r.latestCurve)
+        assertEquals(61L,c.observedTemperatureCount)
+        assertEquals(25.0 to 45.0,c.observedTemperatureBounds())
+        assertTrue(c.points().none { it.temperatureC == 25.0 || it.temperatureC == 45.0 })
+        assertTrue(c.points().size <= 16)
+        assertTrue(r.report().contains("Full observed segment temperature: 25.0 to 45.0 °C (61 samples); usable 61/64"))
+
+        val sparse = ChargingProfile.Curve(sample(0,20).copy(temperatureC=null))
+        repeat(63) { i ->
+            sparse.add(sample((i+1)*30_000L,20).copy(temperatureC=if(i==0) 37.0 else null))
+        }
+        assertEquals(1L,sparse.observedTemperatureCount)
+        assertEquals(37.0 to 37.0,sparse.observedTemperatureBounds())
+        assertTrue(sparse.points().all { it.temperatureC == null })
+        val empty = ChargingProfile.Curve(sample(0,20).copy(temperatureC=null))
+        assertNull(empty.observedTemperatureBounds())
+        assertEquals(0L,empty.observedTemperatureCount)
+    }
+
     @Test fun curveSplitsAtGapsInvalidLevelsAndSourceChanges() {
         val r = ChargingProfile()
         r.accept(sample(1000,15))

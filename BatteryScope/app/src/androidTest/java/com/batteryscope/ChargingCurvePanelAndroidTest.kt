@@ -59,6 +59,7 @@ class ChargingCurvePanelAndroidTest {
                 assertTrue(button.isEnabled)
                 assertTrue(labels().contains("Segment 1 of 2"))
                 assertTrue(labels().contains("0.50 | 71% | 36.0"))
+                assertTrue(labels().contains("All observed segment temperatures: 35.0 to 36.0 °C (2 samples); usable 2/2"))
                 assertTrue(plots.all { it.visibility == View.VISIBLE })
                 assertTrue(containsColor(plots[0],Color.rgb(142,226,185)))
                 assertTrue(containsColor(plots[1],Color.rgb(255,190,120)))
@@ -80,6 +81,15 @@ class ChargingCurvePanelAndroidTest {
                 assertTrue(containsColor(plots[0],Color.rgb(142,226,185)))
                 assertTrue(containsColor(plots[1],Color.rgb(255,190,120)))
 
+                // A valid temperature can be omitted by the bounded point selector.
+                // Report its full observed range without fabricating a plotted dot.
+                val sparse = ChargingProfile.Curve(sample(500_000,92,null)).apply {
+                    repeat(63) { i -> add(sample(500_000L+(i+1)*30_000L,92,if(i==0) 37.0 else null)) }
+                }
+                panel.setCurves(listOf(sparse))
+                assertTrue(labels().contains("no usable retained readings"))
+                assertTrue(labels().contains("37.0 to 37.0 °C (1 samples); usable 1/64"))
+                assertEquals(View.GONE,plots[1].visibility)
                 panel.setCurves(emptyList())
                 assertFalse(button.isEnabled)
                 assertTrue(plots.all { it.visibility == View.GONE })
