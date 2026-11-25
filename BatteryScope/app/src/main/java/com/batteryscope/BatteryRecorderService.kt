@@ -80,18 +80,20 @@ class BatteryRecorderService : Service() {
             // Handler uses uptime; elapsed-realtime deadlines also reflect suspend.
             if (started < nextDeadlineElapsedMs) {
                 if (!handler.postDelayed(this, nextDeadlineElapsedMs - started))
-                    recordOutcome(started, SystemClock.elapsedRealtime(), "Recorder worker rejected next sample")
+                    recordSchedulingFailure("Recorder worker rejected next sample")
                 return
             }
+            val cpuStarted = SystemClock.currentThreadTimeMillis()
             var failure: String? = null
             try { sample(started) }
             catch (t: Exception) { failure = t.javaClass.simpleName + ": " + (t.message ?: "unknown") }
             catch (fatal: Error) {
-                recordOutcome(started, SystemClock.elapsedRealtime(), "Fatal sample failure: " + fatal.javaClass.simpleName)
+                recordOutcome(started, SystemClock.elapsedRealtime(), "Fatal sample failure: " + fatal.javaClass.simpleName,
+                    (SystemClock.currentThreadTimeMillis()-cpuStarted).takeIf { it >= 0L })
                 throw fatal // Never claim a successful sample or retry a fatal process error.
             }
             val finished = SystemClock.elapsedRealtime()
-            recordOutcome(started, finished, failure)
+            recordOutcome(started, finished, failure,(SystemClock.currentThreadTimeMillis()-cpuStarted).takeIf { it >= 0L })
             failure?.let { event("SAMPLE_ERROR", it) }
             if (recorderRunning) {
                 val next = RecorderCadence.nextSlot(nextDeadlineElapsedMs, SystemClock.elapsedRealtime(), SAMPLE_INTERVAL_MS)
@@ -99,7 +101,7 @@ class BatteryRecorderService : Service() {
                 sampleHealth = sampleHealth.skipped(next.skipped)
                 val delay = (next.elapsedMs - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
                 if (!handler.postDelayed(this, delay)) {
-                    recordOutcome(started, SystemClock.elapsedRealtime(), "Recorder worker rejected next sample")
+                    recordSchedulingFailure("Recorder worker rejected next sample")
                 }
             }
         }
@@ -235,8 +237,19 @@ class BatteryRecorderService : Service() {
     }
 
     /** Independent of SQLite: an unwritable DB must not hide sample failures. */
-    private fun recordOutcome(started: Long, finished: Long, failure: String?) {
-        sampleHealth = sampleHealth.completed(started, finished, failure?.take(300))
+    private fun recordSchedulingFailure(failure: String) {
+        sampleHealth = sampleHealth.schedulingFailed(failure)
+        if (activeRecorder !== this || !recorderRunning) return
+        try {
+            getSharedPreferences(PREFS,MODE_PRIVATE).edit()
+                .putString(KEY_LAST_SAMPLE_FAILURE,failure)
+                .putLong(KEY_LAST_SAMPLE_FAILURE_AT,System.currentTimeMillis()).apply()
+        } catch (_: Exception) { }
+        notificationHandler.post { refreshRecorderNotification() }
+    }
+
+    private fun recordOutcome(started: Long, finished: Long, failure: String?, cpuMs: Long?) {
+        sampleHealth = sampleHealth.completed(started, finished, failure?.take(300),cpuMs)
         if (activeRecorder !== this || !recorderRunning) return
         try {
             val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)

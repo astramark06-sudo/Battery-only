@@ -103,6 +103,22 @@ def scan(coordinates, post=post_batch):
     return {c: sorted(ids) for c, ids in findings.items()}
 
 
+def summarize_scopes(coordinates, matches):
+    """A finding in a shared scope counts in each relevant scope, not as a separate component."""
+    if set(coordinates) != set(matches):
+        raise ValueError("Incomplete coordinate coverage")
+    result = {}
+    for scope in sorted(SCOPES):
+        members = [c for c, scopes in coordinates.items() if scope in scopes]
+        matched = [c for c in members if matches[c]]
+        result[scope] = {
+            "component_count": len(members),
+            "matched_component_count": len(matched),
+            "distinct_advisory_count": len({a for c in matched for a in matches[c]}),
+        }
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("inventory", type=Path)
@@ -127,8 +143,13 @@ def main():
         report["component_count"] = len(coordinates)
         report["matched_component_count"] = sum(bool(ids) for ids in matches.values())
         report["status"] = "findings" if report["matched_component_count"] else "no_known_matches"
-        # Findings are evidence for triage, not a claim of app exploitability.
-        exit_code = 0
+        report["scopes"] = summarize_scopes(coordinates,matches)
+        report["distinct_advisory_count"] = len({a for ids in matches.values() for a in ids})
+        # A runtime match blocks CI; other findings remain explicit release-review gates.
+        runtime_matches = report["scopes"]["debugRuntimeClasspath"]["matched_component_count"]
+        report["runtime_gate"] = "blocked" if runtime_matches else "no_known_matches"
+        report["release_review"] = "required" if report["matched_component_count"] else "no_known_matches"
+        exit_code = 2 if runtime_matches else 0
     except Exception as exc:
         report["error"] = type(exc).__name__ + ": " + str(exc)
     args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +157,8 @@ def main():
     print("OSV dependency audit: " + report["status"])
     if report["status"] == "findings":
         print("Review matched component scopes and advisory IDs before release.")
+    if report.get("runtime_gate") == "blocked":
+        print("Runtime advisory match: CI blocked pending triage.")
     if "error" in report:
         print(report["error"])
     return exit_code

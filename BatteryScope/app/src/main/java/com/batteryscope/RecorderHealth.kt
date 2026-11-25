@@ -23,17 +23,36 @@ internal data class RecorderHealth(
     val lastFinishedElapsedMs: Long? = null,
     val lastDurationMs: Long? = null,
     val error: String? = null,
-    val skippedDeadlines: Long = 0L
+    val skippedDeadlines: Long = 0L,
+    val sampleAttempts: Long = 0L,
+    val successfulSamples: Long = 0L,
+    val totalSampleWallMs: Long = 0L,
+    val maxSampleWallMs: Long = 0L,
+    val measuredCpuAttempts: Long = 0L,
+    val totalSamplerCpuMs: Long = 0L
 ) {
-    fun completed(start: Long, finished: Long, failure: String?): RecorderHealth {
+    private fun saturatedAdd(a: Long,b: Long): Long =
+        if (b > Long.MAX_VALUE-a) Long.MAX_VALUE else a+b
+    fun completed(start: Long, finished: Long, failure: String?, cpuMs: Long? = null): RecorderHealth {
         require(start >= startedElapsedMs && finished >= start)
+        val duration = finished-start
+        val validCpu = cpuMs?.takeIf { it >= 0L }
         return copy(
+            sampleAttempts = saturatedAdd(sampleAttempts,1),
+            successfulSamples = saturatedAdd(successfulSamples,if (failure == null) 1 else 0),
+            totalSampleWallMs = saturatedAdd(totalSampleWallMs,duration),
+            maxSampleWallMs = maxOf(maxSampleWallMs,duration),
+            measuredCpuAttempts = saturatedAdd(measuredCpuAttempts,if (validCpu != null) 1 else 0),
+            totalSamplerCpuMs = saturatedAdd(totalSamplerCpuMs,validCpu ?: 0L),
             lastSuccessElapsedMs = if (failure == null) finished else lastSuccessElapsedMs,
             lastFinishedElapsedMs = finished,
             lastDurationMs = finished - start,
             error = failure
         )
     }
+
+    /** Scheduling rejection is not a second sample attempt or a successful commit. */
+    fun schedulingFailed(failure: String): RecorderHealth = copy(error=failure)
 
     fun skipped(count: Long): RecorderHealth {
         require(count >= 0L)
@@ -59,5 +78,14 @@ internal data class RecorderHealth(
         lastDurationMs?.let { append(" • last attempt " + it + " ms") }
         append(" • skipped sampling deadlines this service session " + skippedDeadlines)
         error?.let { append(" • " + it) }
+        append("\nThis service session: $successfulSamples/$sampleAttempts successful sample attempts")
+        if (sampleAttempts > 0L) {
+            append(" • mean wall duration " + String.format(java.util.Locale.US,"%.1f",totalSampleWallMs.toDouble()/sampleAttempts) + " ms")
+            append(" • max " + maxSampleWallMs + " ms")
+        }
+        append("\nMeasured sampler-thread CPU time: ")
+        if (measuredCpuAttempts == 0L) append("unavailable")
+        else append(totalSamplerCpuMs.toString() + " ms across " + measuredCpuAttempts + " attempts")
+        append(". Excludes separate inventory worker, wake-lock impact, other threads and system work; not battery drain, energy or whole-app CPU.")
     }
 }

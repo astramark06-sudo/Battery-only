@@ -22,6 +22,31 @@ class RecorderHealthTest {
         assertEquals(Long.MAX_VALUE,health.skipped(Long.MAX_VALUE).skippedDeadlines)
     }
 
+    @Test fun sampleWorkMetricsDistinguishAttemptsCpuAndSchedulingFailures() {
+        val first = RecorderHealth(100).completed(100,200,null,7)
+        val failed = first.completed(30_100,30_300,"disk error",10)
+        val unscheduled = failed.schedulingFailed("queue rejected")
+        assertEquals(2L,unscheduled.sampleAttempts)
+        assertEquals(1L,unscheduled.successfulSamples)
+        assertEquals(300L,unscheduled.totalSampleWallMs)
+        assertEquals(200L,unscheduled.maxSampleWallMs)
+        assertEquals(17L,unscheduled.totalSamplerCpuMs)
+        assertEquals(2L,unscheduled.measuredCpuAttempts)
+        assertEquals(200L,unscheduled.lastSuccessElapsedMs)
+        assertEquals(30_300L,unscheduled.lastFinishedElapsedMs)
+        assertEquals("DEGRADED",unscheduled.state(30_301))
+        assertTrue(unscheduled.report(30_301).contains("mean wall duration 150.0 ms"))
+        assertTrue(unscheduled.report(30_301).contains("17 ms across 2 attempts"))
+        assertTrue(unscheduled.report(30_301).contains("not battery drain"))
+        val next = unscheduled.completed(60_100,60_200,null,-1)
+        assertEquals(3L,next.sampleAttempts)
+        assertEquals(2L,next.successfulSamples)
+        assertEquals(2L,next.measuredCpuAttempts)
+        assertEquals(17L,next.totalSamplerCpuMs)
+        assertNull(next.error)
+        assertTrue(RecorderHealth(0).report(0).contains("Measured sampler-thread CPU time: unavailable"))
+    }
+
     @Test fun startupAndStaleAreNotReportedAsRecording() {
         val starting = RecorderHealth(100)
         assertEquals("WAITING_FOR_FIRST_SAMPLE", starting.state(100))

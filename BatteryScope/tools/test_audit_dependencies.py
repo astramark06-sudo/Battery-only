@@ -1,6 +1,6 @@
 import unittest
 
-from audit_dependencies import parse_inventory, scan
+from audit_dependencies import parse_inventory, scan, summarize_scopes
 
 
 INVENTORY = """Gradle 8.9
@@ -56,6 +56,23 @@ class DependencyAuditTest(unittest.TestCase):
                       {"results": [{"vulns": [{"modified": "missing ID"}]}]}):
             with self.subTest(reply=reply), self.assertRaises(ValueError):
                 scan({"g:a:1": []}, lambda _: reply)
+
+    def test_scope_summary_counts_shared_component_without_inventing_runtime_matches(self):
+        coordinates = {
+            "g:runtime:1": ["debugRuntimeClasspath", "debugUnitTestRuntimeClasspath"],
+            "g:test:1": ["debugUnitTestRuntimeClasspath"],
+            "g:build:1": ["rootBuildscriptClasspath"],
+        }
+        matches = {"g:runtime:1": [], "g:test:1": ["GHSA-1"], "g:build:1": ["GHSA-1","GHSA-2"]}
+        result = summarize_scopes(coordinates,matches)
+        self.assertEqual(result["debugRuntimeClasspath"], {
+            "component_count": 1, "matched_component_count": 0, "distinct_advisory_count": 0})
+        self.assertEqual(result["debugUnitTestRuntimeClasspath"]["matched_component_count"],1)
+        self.assertEqual(result["rootBuildscriptClasspath"]["distinct_advisory_count"],2)
+        matches["g:runtime:1"] = ["GHSA-1"]
+        self.assertEqual(summarize_scopes(coordinates,matches)["debugRuntimeClasspath"]["matched_component_count"],1)
+        with self.assertRaises(ValueError):
+            summarize_scopes(coordinates,{})
 
     def test_repeated_token_is_incomplete(self):
         with self.assertRaises(ValueError):

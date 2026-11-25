@@ -1,5 +1,12 @@
 # BatteryScope release checklist
 
+## 2026-11-25 — Audit remediation batch 10 (recorder work evidence and security gate)
+
+- Verified batch 8 4ca475ef: Android 45662476887 and signing/advisory 45662476901 passed. Exact artifacts 15046177383 (1,141,115 bytes; SHA-256 d57404de4b21373b71131b0ee861860e5b901a2ec628eb757492b1ba80889554) and 15045003945 (71,291 bytes; SHA-256 fff2eaf7a775a9c7d5f52bb2f83f0e78b0fbe83e64e3a6290f1ffe7b8e0dfa46) verified CRC/SHA and XML: 103 JVM, 37 Android, zero failures/errors/skips; 16 signing/advisory Python tests passed. Large history test (50,300 synthetic rows) and concurrent restore test passed. APK 1,059,952 bytes SHA-256 82e272da02e0fd3766527ebffb8f23c825dbfe9cdc1e47aab20b8e64d5e6a596; exact five permissions, 64 lint warnings/0 errors. CI and independent RSA v2 signature, protected-content digest, cert/public-key match confirmed signer a4a83493b63e678e276636c08809537f96565fc29b147a3ba2763381a0466576; protected-byte mutation rejected on digest mismatch. Not a trusted installed signer.
+- Batch 8 live OSV report completed: 157 distinct coordinates; 15 matched components, 60 distinct advisory IDs, all root buildscript. No known matches in resolved runtime/test scopes, not proof of safety. Inventory and scope counts in DEPENDENCY_SECURITY.md. Batch 9 659ce163 published and confirmed; Android 45663973732, signing 45663973742. Do not publish this batch before verifying batch 9 or diagnosing an actual failure.
+- Add process-local sample attempt/success counts, aggregate/max wall time and measured sampler-thread CPU time using Android monotonic thread CPU clock; no collection of other apps/device CPU, no persisted new fields, no conversion to energy or total wake-lock overhead. Separate worker scheduling failure from sample attempt/commit accounting (previously a queue rejection could double-count a completed attempt). New JVM regression. Existing cadence/recording mode unchanged; physical power/long soak still external.
+- OSV report now includes per-scope and distinct advisory counts; runtime matches fail CI, incomplete scan fails, build/test findings remain explicit release-review blockers requiring triage rather than automatically calling them exploitable. One additional offline scope test. No dependency upgrades beyond batch 9 candidate. Current docs and acceptance gate supersede historical version/permissions/Usage Access descriptions. No new user data, schema, format, identity, permissions, hardware/charging controls, encryption or signing changes. No merge/release/uninstall.
+
 ## 2026-11-25 — Audit remediation batch 9 (candidate patched Kotlin toolchain)
 
 - Parent 4ca475ef is the published cumulative batch 8, Android 45662476887 and signing/advisory-unit 45662476901. Signing/advisory-unit passed; Android still running when this candidate was prepared. Do not publish while useful CI runs; fix any actual failures first.
@@ -263,6 +270,18 @@ History analytics exclude intervals outside 1–90 seconds and intervals spannin
 > **Repository migration — 2026-11-24:** Current development is in [Battery-only/main](https://github.com/astramark06-sudo/Battery-only/tree/main). The former `batteryscope` branch in `ocr` is historical, not the active development branch. The [standalone Android build](https://github.com/astramark06-sudo/Battery-only/actions/runs/45348612049) passed for commit `45d65c6b624515bfd269e1eaa6380cb4611e050a` (artifact ID `14899402289`). Earlier source commits, checksums and signer records below remain historical evidence; no new device or signing-compatibility verification is claimed.
 
 A source commit is not a release. Keep build verification, artifact integrity, installation and physical-device validation as separate results.
+
+## Current cumulative acceptance gates (supersede historical checks below)
+
+- [x] Batch 8 full Android and signing/advisory verification, including concurrent restore and large-history tests.
+- [ ] Batch 9 toolchain and selected dependency versions confirmed by cumulative build, emulator, lint and live OSV report.
+- [ ] Latest cumulative source verified after any changes; compare exact advisory findings and review remaining build/test matches. No unresolved runtime matches accepted.
+- [ ] Exact current APK ZIP/hash, package, version, five permissions, signer and protected-content checks; identify debug candidate separately from update compatibility.
+- [ ] Physical handset normal-use measurement and recording continuity/overhead validation, independently trusted installed signing certificate/version, history preservation. Do not force discharge or perform hardware changes.
+- [ ] Verify current app controls/collection scope; legacy app attribution rows are preserved but not newly collected. No new broad tracking or permission.
+- [ ] No release/merge/uninstall without explicit authorization. Original portable backup remains unencrypted and does not authenticate originating device; no claim of encrypted or device-bound backups.
+
+## Historical release checklist (not current release acceptance)
 
 ## Before release
 - [ ] Confirm the active repository is Battery-only and the branch is main (or the intended PR branch) and inspect the complete diff from the previous verified checkpoint.
