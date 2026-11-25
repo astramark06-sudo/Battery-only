@@ -47,6 +47,7 @@ class MainActivity : Activity() {
     private var observedRestoreRevision = 0L
     private var pendingImportRequest = 0
     private lateinit var samplingModeButton: Button
+    private lateinit var recordingToggle: Button
 
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private lateinit var telemetryThread: HandlerThread
@@ -264,6 +265,9 @@ class MainActivity : Activity() {
         }
         toolsContent.addView(samplingModeButton, LinearLayout.LayoutParams(-1, -2))
         updateSamplingModeButton()
+        recordingToggle = Button(this).apply { setOnClickListener { toggleRecording() } }
+        toolsContent.addView(recordingToggle, LinearLayout.LayoutParams(-1,-2))
+        updateRecordingToggle()
 
         scroll.addView(content)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -615,12 +619,15 @@ class MainActivity : Activity() {
                     liveSummary.setTextIfChanged(compactReport)
                     val health = BatteryRecorderService.liveHealthReport()
                     monitorText.setTextIfChanged(statusReport + "\nRecorder: " + health)
-                    recorderSummary.setTextIfChanged("Recorder: " + when (health.substringBefore(" • ")) {
+                    recorderSummary.setTextIfChanged("Recorder: " + when {
+                        recordingPaused() -> if (BatteryRecorderService.isRecorderLive()) "Pause requested • stopping" else "Paused by user"
+                        else -> when (health.substringBefore(" • ")) {
                         "RECENT_SAMPLE_SAVED" -> "Recording • recent sample saved"
                         "WAITING_FOR_FIRST_SAMPLE" -> "Waiting for first sample"
                         "DEGRADED" -> "Sample failed • open recorder status"
                         "STALE" -> "Recording not confirmed • open recorder status"
                         else -> "Not running • open recorder status"
+                        }
                     })
                     batteryText.setTextIfChanged(batteryReport)
                     chargerText.setTextIfChanged(chargerReport)
@@ -642,8 +649,56 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Monitoring is automatic: every foreground app launch repairs a missing recorder request. */
+    private fun recordingPaused(): Boolean = RecordingPreference.isPaused(
+        getSharedPreferences(BatteryRecorderService.PREFS, MODE_PRIVATE))
+
+    private fun updateRecordingToggle() {
+        if (::recordingToggle.isInitialized) recordingToggle.setTextIfChanged(
+            if (recordingPaused()) "Resume history recording" else "Pause history recording")
+    }
+
+    private fun toggleRecording() {
+        if (recordingPaused()) {
+            val prefs = getSharedPreferences(BatteryRecorderService.PREFS, MODE_PRIVATE)
+            RecordingPreference.setPaused(prefs,false)
+            updateRecordingToggle()
+            ensureRecorderRunning()
+            refreshReadings()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Pause history recording?")
+            .setMessage("New background battery samples will stop after the recorder finishes current work. Existing history stays intact. Live dashboard readings remain available. Recording stays paused after reopening the app or restarting the phone until you resume it.")
+            .setNegativeButton("Cancel",null)
+            .setPositiveButton("Pause") { _,_ ->
+                val prefs = getSharedPreferences(BatteryRecorderService.PREFS, MODE_PRIVATE)
+                RecordingPreference.setPaused(prefs,true)
+                updateRecordingToggle()
+                try {
+                    stopService(Intent(this,BatteryRecorderService::class.java))
+                    statusText.setTextIfChanged("Recording pause requested. Existing history retained.")
+                } catch (e: Exception) {
+                    statusText.setTextIfChanged("Pause saved, but stop request failed: " + e.javaClass.simpleName)
+                }
+                refreshReadings()
+            }.show()
+    }
+
+    /** Automatic recording is the existing default; an explicit pause takes precedence. */
     private fun ensureRecorderRunning() {
+        updateRecordingToggle()
+        if (recordingPaused()) {
+            recorderSummary.setTextIfChanged("Recorder: " +
+                if (BatteryRecorderService.isRecorderLive()) "Pause requested • stopping" else "Paused by user")
+            monitorText.setTextIfChanged("History recording paused by user. Live readings remain available.")
+            // Also repair a previous failed stop request without re-enabling the recorder.
+            if (BatteryRecorderService.isRecorderLive()) {
+                try { stopService(Intent(this,BatteryRecorderService::class.java)) }
+                catch (e: Exception) { statusText.setTextIfChanged("Recorder stop failed: " + e.javaClass.simpleName) }
+            }
+            updateSamplingModeButton()
+            return
+        }
         try {
             val intent = Intent(this, BatteryRecorderService::class.java)
                 .setAction(BatteryRecorderService.ACTION_START)
@@ -654,8 +709,10 @@ class MainActivity : Activity() {
                 requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), NOTIFICATION_REQUEST_CODE)
             }
             handler.postDelayed({
-                monitorText.text = "Recorder: " + BatteryRecorderService.liveHealthReport()
-                refreshHistoryDisplay(true)
+                if (!recordingPaused()) {
+                    monitorText.text = "Recorder: " + BatteryRecorderService.liveHealthReport()
+                    refreshHistoryDisplay(true)
+                }
             }, 1200L)
         } catch (t: Throwable) {
             val failure = t.javaClass.simpleName + ": " + (t.message ?: "unknown")
@@ -671,7 +728,7 @@ class MainActivity : Activity() {
         val keepAwake = prefs.getBoolean(BatteryRecorderService.KEY_KEEP_CPU_AWAKE, true)
         val next = !keepAwake
         prefs.edit().putBoolean(BatteryRecorderService.KEY_KEEP_CPU_AWAKE, next).apply()
-        if (BatteryRecorderService.isRecorderLive()) {
+        if (!recordingPaused() && BatteryRecorderService.isRecorderLive()) {
             try {
                 startService(Intent(this, BatteryRecorderService::class.java).setAction(BatteryRecorderService.ACTION_RECONFIGURE))
             } catch (t: Throwable) {

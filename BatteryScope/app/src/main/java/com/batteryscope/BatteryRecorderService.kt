@@ -119,6 +119,17 @@ class BatteryRecorderService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        // Honor an explicit pause even if a delayed start/reconfigure or sticky restart arrives.
+        if (RecordingPreference.isPaused(prefs)) {
+            recorderRunning = false
+            if (activeRecorder === this) activeRecorder = null
+            handler.removeCallbacks(sampler)
+            notificationHandler.removeCallbacksAndMessages(null)
+            releaseSamplingWakeLock()
+            // A raced startForegroundService request must still meet the foreground deadline.
+            try { startAsForeground() } finally { stopSelf(startId) }
+            return START_NOT_STICKY
+        }
         val wasRunning = recorderRunning
         val keepAwake = prefs.getBoolean(KEY_KEEP_CPU_AWAKE, true)
         try {

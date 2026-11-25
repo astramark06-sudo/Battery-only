@@ -1,5 +1,11 @@
 # BatteryScope changelog
 
+## 2026-11-25 — Audit remediation batch 3 (persistent user-controlled recording pause)
+
+- Batch 1 source 5683ee86 passed Android 45645106338 and signing 45645107272. Independent archive digest/CRC and test XML checks: 99 JVM, 26 emulator tests, no failures/errors/skips; lint 63 warnings, 0 errors. APK SHA-256 25bfaeef1f90454e460b0b4a2763ad40b27573c750fff8c1e551ba962d9ae739; CI v2 debug cert 4b6f6070bddbb1d5861ea9a43681b449d06e4ce8ee001d62ab5fcd30a3538d0d, not trusted installed identity. Batch 2 source 46fd7819 advanced after checks; Android CI 45645894442 must finish before publishing this batch.
+- Add explicit pause/resume behind history/settings tools with confirmation and independent persisted preference. Existing automatic start behavior remains default unless user pauses. Boot/package-update receiver, Activity startup/reconfigure and sticky/delayed service start respect pause. Live readings remain available; existing history not deleted. A currently executing sample may finish; the service stop is asynchronous. Added isolated preference regression; real lifecycle/reboot/handset and overhead tests still required. No new permissions or data formats.
+- Next verify batch 2 then this batch, prioritize remaining history-performance and restore/recorder contention checks, actual Activity integration, charger evidence/source labeling, dependency and docs checks. Device electrical validation and trusted installed signer remain external. No forced discharge, privileged access, charging control, uninstall, merge/release or data deletion.
+
 ## 2026-11-25 — Audit remediation batch 2 (structured summary and validation)
 
 - Build on batch 1, source 5683ee86. Pass typed charging-stage snapshot from same database scan as detailed report and curves; eliminate English report parsing in dashboard. Add concise visible recorder health, skip legacy application-attribution work in charging-focused reports without changing historical raw data.
