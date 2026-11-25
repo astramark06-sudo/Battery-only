@@ -107,7 +107,11 @@ internal class ChargingProfile {
     private var lastEvidence: List<String>? = null
     private var evidenceCount = 0L
     private val sourceBands = linkedMapOf<String,Band>()
-    private val labeledBands = linkedMapOf<Pair<String,String>,List<Band>>()
+    private class LabeledStage {
+        val rate = Band()
+        val temperatures = Range()
+    }
+    private val labeledBands = linkedMapOf<Pair<String,String>,List<LabeledStage>>()
     private var omittedLabeledIntervals = 0L
     private fun observeLabeledInterval(before: Sample, after: Sample, stage: Int, gain: Int) {
         val label = after.chargerLabel ?: return
@@ -119,7 +123,9 @@ internal class ChargingProfile {
             omittedLabeledIntervals++
             return
         }
-        labeledBands.getOrPut(key) { List(3) { Band() } }[stage].add(after.elapsed-before.elapsed,gain)
+        val group = labeledBands.getOrPut(key) { List(3) { LabeledStage() } }[stage]
+        group.rate.add(after.elapsed-before.elapsed,gain)
+        after.temperatureC?.takeIf { it in -100.0..100.0 }?.let { group.temperatures.add(it) }
     }
     private fun observeEvidence(s: Sample) {
         val values = listOf(s.plug,s.state,
@@ -385,11 +391,12 @@ internal class ChargingProfile {
         if (labeledBands.isEmpty()) appendLine("No eligible manually labelled intervals.")
         labeledBands.forEach { (key,stageBands) ->
             appendLine("  ${key.first} • Android source ${key.second}")
-            stageBands.forEachIndexed { i,band ->
+            stageBands.forEachIndexed { i,group ->
                 val (a,b) = phaseBounds[i]
+                val band = group.rate
                 appendLine("    $a–$b%: " + (band.rate()?.let {
                     String.format(Locale.US,"%.2f pp/h • +%d points • %.2f observed min",it,band.gained,band.ms/60_000.0)
-                } ?: "insufficient observations"))
+                } ?: "insufficient observations") + "; interval-end temperatures: " + group.temperatures.text("°C"))
             }
         }
         appendLine("At most 16 label/source groups in recording order; additional labelled intervals omitted: $omittedLabeledIntervals.")

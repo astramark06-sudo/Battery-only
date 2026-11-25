@@ -7,10 +7,12 @@ internal data class ChargerLabel(val name: String, val source: String, val assig
     fun validAt(plug: String, elapsed: Long): Boolean =
         normalizedName(name) == name && knownSource(source) && source == plug &&
         assignedElapsed >= 0L && assignedElapsed <= elapsed &&
-        assignment.matches(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))
+        assignment.matches(assignmentPattern)
 
     companion object {
-        fun knownSource(source: String): Boolean = source in setOf("AC","USB","WIRELESS","DOCK")
+        private val assignmentPattern = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+        private val knownSources = setOf("AC","USB","WIRELESS","DOCK")
+        fun knownSource(source: String): Boolean = source in knownSources
         fun normalizedName(raw: String): String? = raw.trim().takeIf {
             it.length in 1..40 && it.all { c -> c.isLetterOrDigit() || c in " -_.()" }
         }

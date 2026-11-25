@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "BatteryScope/app/**"
+      - "BatteryScope/tools/**"
       - "BatteryScope/build.gradle.kts"
       - "BatteryScope/settings.gradle.kts"
       - "BatteryScope/gradle.properties"
@@ -12,6 +13,7 @@ on:
   pull_request:
     paths:
       - "BatteryScope/app/**"
+      - "BatteryScope/tools/**"
       - "BatteryScope/build.gradle.kts"
       - "BatteryScope/settings.gradle.kts"
       - "BatteryScope/gradle.properties"
@@ -61,10 +63,11 @@ jobs:
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
         with:
           gradle-version: "8.9"
+          cache-disabled: true
 
       - name: Run JVM unit tests and assemble debug APK
         working-directory: BatteryScope
-        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
+        run: gradle --no-daemon --no-build-cache --no-configuration-cache --stacktrace :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
 
       - name: Verify APK metadata and checksum
         working-directory: BatteryScope
@@ -105,11 +108,16 @@ jobs:
 
       - name: Android lint
         working-directory: BatteryScope
-        run: gradle --no-daemon --stacktrace :app:lintDebug
+        run: gradle --no-daemon --no-build-cache --no-configuration-cache --stacktrace :app:lintDebug
 
       - name: Capture resolved dependency inventory
         working-directory: BatteryScope
-        run: gradle --no-daemon --stacktrace :app:reportResolvedDependencies
+        run: gradle --no-daemon --no-build-cache --no-configuration-cache --stacktrace :app:reportResolvedDependencies
+
+      - name: Query public Maven dependency advisories
+        working-directory: BatteryScope
+        run: |
+          python3 tools/audit_dependencies.py app/build/reports/dependencies/resolved-debug.txt app/build/reports/dependencies/osv-debug.json
 
       - name: Upload APK and verification reports
         if: always()
@@ -125,6 +133,7 @@ jobs:
             BatteryScope/apk-signing.txt
             BatteryScope/app/build/reports/lint-results-debug.*
             BatteryScope/app/build/reports/dependencies/resolved-debug.txt
+            BatteryScope/app/build/reports/dependencies/osv-debug.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -163,6 +172,7 @@ jobs:
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
         with:
           gradle-version: "8.9"
+          cache-disabled: true
 
       - name: Install emulator and Android 12L image
         run: |
@@ -201,7 +211,7 @@ jobs:
           adb shell input keyevent 82
       - name: Run Android instrumentation tests
         working-directory: BatteryScope
-        run: gradle --no-daemon --stacktrace :app:connectedDebugAndroidTest
+        run: gradle --no-daemon --no-build-cache --no-configuration-cache --stacktrace :app:connectedDebugAndroidTest
       - name: Upload Android test reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

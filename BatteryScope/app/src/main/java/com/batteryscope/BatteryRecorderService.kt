@@ -514,7 +514,11 @@ class BatteryRecorderService : Service() {
     /** Preserve source timestamps for UsageStats events instead of stamping poll time. */
     private fun eventAt(timestampMs: Long, type: String, details: String) {
         if (::handler.isInitialized && Looper.myLooper() != worker.looper) {
-            handler.post { writeEventOnWorker(timestampMs, type, details) }
+            if (!handler.post { writeEventOnWorker(timestampMs, type, details) }) {
+                getSharedPreferences(PREFS,MODE_PRIVATE).edit()
+                    .putString(KEY_LAST_EVENT_FAILURE,"Event worker rejected " + type)
+                    .putLong(KEY_LAST_EVENT_FAILURE_AT,System.currentTimeMillis()).apply()
+            }
         } else {
             writeEventOnWorker(timestampMs, type, details)
         }

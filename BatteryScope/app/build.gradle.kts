@@ -34,19 +34,25 @@ dependencies {
 /** Evidence of selected debug and test dependency versions, not a lock or vulnerability scan. */
 tasks.register("reportResolvedDependencies") {
     doLast {
-        val names = listOf("debugRuntimeClasspath","debugUnitTestRuntimeClasspath","debugAndroidTestRuntimeClasspath")
+        val scopes = listOf(
+            "debugRuntimeClasspath" to configurations.getByName("debugRuntimeClasspath"),
+            "debugUnitTestRuntimeClasspath" to configurations.getByName("debugUnitTestRuntimeClasspath"),
+            "debugAndroidTestRuntimeClasspath" to configurations.getByName("debugAndroidTestRuntimeClasspath"),
+            "rootBuildscriptClasspath" to rootProject.buildscript.configurations.getByName("classpath"),
+            "appBuildscriptClasspath" to buildscript.configurations.getByName("classpath")
+        )
         val file = layout.buildDirectory.file("reports/dependencies/resolved-debug.txt").get().asFile
         file.parentFile.mkdirs()
         file.bufferedWriter().use { out ->
             out.appendLine("Gradle " + gradle.gradleVersion)
             out.appendLine("Java " + System.getProperty("java.version"))
-            names.forEach { name ->
-                val result = configurations.getByName(name).incoming.resolutionResult
+            scopes.forEach { (name,configuration) ->
+                val result = configuration.incoming.resolutionResult
                 val unresolved = result.allDependencies.filterIsInstance<org.gradle.api.artifacts.result.UnresolvedDependencyResult>()
                 check(unresolved.isEmpty()) { "Unresolved dependencies in " + name + ": " + unresolved.map { it.attempted.displayName } }
                 out.appendLine("[" + name + "]")
-                result.allComponents.mapNotNull { it.moduleVersion }
-                    .map { it.group + ":" + it.name + ":" + it.version }
+                result.allComponents.mapNotNull { it.id as? org.gradle.api.artifacts.component.ModuleComponentIdentifier }
+                    .map { it.group + ":" + it.module + ":" + it.version }
                     .distinct().sorted().forEach { out.appendLine(it) }
             }
         }

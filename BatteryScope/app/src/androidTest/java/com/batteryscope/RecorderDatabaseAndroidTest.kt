@@ -180,6 +180,59 @@ class RecorderDatabaseAndroidTest {
         android.util.Log.i("BatteryScopeBenchmark","Overview synthetic 300 rows ns=$smallNs; 50300 rows (300 recent) ns=$largeNs")
     }
 
+    @Test fun concurrentRecorderAppendWaitsForRestoreAndKeepsCommittedSequence() = database { source ->
+        repeat(100) { i -> sample(source,1000L+i*1000L,i*1000L,40,true) }
+        val bytes = backup(source)
+        val targetName = name()
+        val restore = RecorderDatabase(context,targetName)
+        val reader = RecorderDatabase(context,targetName)
+        val writer = RecorderDatabase(context,targetName)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(3)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val writerStarted = java.util.concurrent.CountDownLatch(1)
+        val seconds = java.util.concurrent.TimeUnit.SECONDS
+        try {
+            sample(restore,1_000_000L,100_000L,60,true)
+            reader.readableDatabase
+            writer.writableDatabase
+            val input = object : java.io.FilterInputStream(ByteArrayInputStream(bytes)) {
+                var reads = 0
+                override fun read(b: ByteArray, off: Int, len: Int): Int {
+                    if (++reads == 2) {
+                        entered.countDown()
+                        check(release.await(15,seconds)) { "Restore test gate timeout" }
+                    }
+                    return super.read(b,off,minOf(len,512))
+                }
+            }
+            val imported = pool.submit<HistoryBackup.Counts> { input.use { restore.restoreBackup(it) } }
+            assertTrue("Restore transaction reached the gated stream",entered.await(10,seconds))
+            val committed = pool.submit<Long> { number(reader.readableDatabase,"SELECT COUNT(*) FROM samples") }
+            assertEquals(1L,committed.get(10,seconds))
+            val appended = pool.submit<Unit> {
+                writerStarted.countDown()
+                sample(writer,1_030_000L,130_000L,61,true)
+            }
+            assertTrue(writerStarted.await(5,seconds))
+            release.countDown()
+            assertEquals(HistoryBackup.Counts(100,0),imported.get(15,seconds))
+            appended.get(15,seconds)
+            val timestamps = reader.readableDatabase.rawQuery("SELECT timestamp_ms FROM samples ORDER BY id",null).use { c ->
+                buildList { while (c.moveToNext()) add(c.getLong(0)) }
+            }
+            assertEquals((0 until 100).map { 1000L+it*1000L } + listOf(1_000_000L,1_030_000L),timestamps)
+        } finally {
+            release.countDown()
+            pool.shutdown()
+            check(pool.awaitTermination(20,seconds)) { "Restore test worker did not terminate" }
+            restore.close()
+            reader.close()
+            writer.close()
+            context.deleteDatabase(targetName)
+        }
+    }
+
     @Test fun exactOverlapRecoveryPreservesDuplicatesAndRejectsConflictsAtomically() = database { source ->
         sample(source,1000,100,70)
         sample(source,2000,200,69)
