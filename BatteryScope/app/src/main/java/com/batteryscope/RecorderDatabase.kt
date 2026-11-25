@@ -240,11 +240,12 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         }
     }
 
-    private fun chargingEvidenceReport(now: Long, range: SnapshotRange, capture: ((ChargingProfile) -> Unit)?): String {
+    /** Same observation policy for the lightweight overview and the complete report. */
+    private fun readChargingProfile(now: Long, minId: Long, maxId: Long): ChargingProfile {
         val profile = ChargingProfile()
         readableDatabase.rawQuery(
             "SELECT elapsed_realtime_ms,boot_count,battery_percent,battery_status,plug_type,battery_voltage_mv,battery_current_ua,temperature_c,charge_counter_uah,usb_voltage_candidate_uv,usb_current_candidate_ua,timestamp_ms,max_charging_current_ua,max_charging_voltage_uv FROM samples INDEXED BY idx_samples_time WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id",
-            windowArgs(now-30L*86_400_000L,now,range)
+            arrayOf((now-30L*86_400_000L).toString(),now.toString(),minId.toString(),maxId.toString())
         ).use { cursor ->
             fun intOrNull(i: Int) = if (cursor.isNull(i)) null else cursor.getLong(i).takeIf { it in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong() }?.toInt()
             fun longOrNull(i: Int) = if (cursor.isNull(i)) null else cursor.getLong(i)
@@ -254,8 +255,27 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 longOrNull(8),longOrNull(9),longOrNull(10),longOrNull(11),longOrNull(12),longOrNull(13)
             ))
         }
+        return profile
+    }
+
+    private fun chargingEvidenceReport(now: Long, range: SnapshotRange, capture: ((ChargingProfile) -> Unit)?): String {
+        val profile = readChargingProfile(now,range.minId,range.maxId)
         capture?.invoke(profile)
         return profile.report()
+    }
+
+    internal data class ChargingOverview(val curves: List<ChargingProfile.Curve>,
+        val stages: List<ChargingProfile.Stage>)
+
+    /** Only the last 30 days of samples are analysed on passive dashboard refresh.
+     * Capture immutable ID bounds in one statement, without counting all rows or scanning events.
+     */
+    internal fun chargingOverview(now: Long): ChargingOverview {
+        val (minId,maxId) = readableDatabase.rawQuery(
+            "SELECT (SELECT COALESCE(MIN(id),1) FROM samples),(SELECT COALESCE(MAX(id),0) FROM samples)",null
+        ).use { c -> check(c.moveToFirst()); c.getLong(0) to c.getLong(1) }
+        val profile = readChargingProfile(now,minId,maxId)
+        return ChargingOverview(profile.chartCurves(),profile.stages())
     }
 
     fun historySummary(now: Long = System.currentTimeMillis(), chargingFocus: Boolean = false): String =

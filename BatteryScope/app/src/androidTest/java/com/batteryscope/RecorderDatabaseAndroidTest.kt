@@ -78,6 +78,33 @@ class RecorderDatabaseAndroidTest {
         assertArrayEquals(before,backup(db))
     }
 
+    @Test fun lightweightOverviewMatchesFullReportAndLeavesRawHistoryUnchanged() = database { db ->
+        val now = 2_000_000_000_000L
+        val day = 86_400_000L
+        sample(db,now-31*day,100,10,true)
+        sample(db,now-90_000,200_000,20,true)
+        sample(db,now-60_000,230_000,21,true)
+        sample(db,now-30_000,260_000,22,true)
+        sample(db,now+30_000,320_000,99,true)
+        db.insertEvent(now-40*day,"TEST","old event retained")
+        val before = backup(db)
+        val overview = db.chargingOverview(now)
+        val full = db.chargingDashboard(now)
+        assertEquals(full.stages,overview.stages)
+        assertEquals(full.curves.map { it.points() },overview.curves.map { it.points() })
+        assertEquals(listOf(20,21,22),overview.curves.single().points().map { it.percent })
+        assertEquals(60_000L,overview.stages[1].observedMs)
+        assertEquals(2L,overview.stages[1].gained)
+        assertArrayEquals(before,backup(db))
+    }
+
+    @Test fun emptyOverviewHasNoInventedRates() = database { db ->
+        val overview = db.chargingOverview(2_000_000_000_000L)
+        assertTrue(overview.curves.isEmpty())
+        assertEquals(3,overview.stages.size)
+        assertTrue(overview.stages.all { it.rate == null && it.observedMs == 0L && it.exactText == null })
+    }
+
     @Test fun exactOverlapRecoveryPreservesDuplicatesAndRejectsConflictsAtomically() = database { source ->
         sample(source,1000,100,70)
         sample(source,2000,200,69)

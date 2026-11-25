@@ -38,11 +38,10 @@ class MainActivity : Activity() {
     private lateinit var diagnosticText: TextView
     private lateinit var statusText: TextView
     private lateinit var monitorText: TextView
-    private lateinit var historyText: TextView
     private lateinit var curvePanel: ChargingCurvePanel
-    private lateinit var capacityText: TextView
     private val historyRefreshGate = RefreshGate(300_000L)
-    private val capacityRefreshGate = RefreshGate(0L)
+    private var reportLoading = false
+    private var reportDialog: AlertDialog? = null
     private lateinit var historyOperationText: TextView
     private var observedRestoreRevision = 0L
     private var pendingImportRequest = 0
@@ -127,6 +126,8 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        reportDialog?.dismiss()
+        reportDialog = null
         if (::telemetryThread.isInitialized) telemetryThread.quitSafely()
         super.onDestroy()
     }
@@ -179,10 +180,8 @@ class MainActivity : Activity() {
         batteryText = addPanel(content, "Battery readings")
         chargerText = addPanel(content, "Charger / phone communication")
         diagnosticText = addPanel(content, "Measurement quality & sources")
-        historyText = addPanel(content, "Detailed charging history")
-        historyText.text = "Waiting for history…"
-        capacityText = addPanel(content, "Battery health & capacity")
-        capacityText.text = "Capacity estimate not available yet."
+        addReportButton(content, "Detailed charging history") { db -> db.historySummary(chargingFocus=true) }
+        addReportButton(content, "Battery health & capacity") { db -> db.capacityEstimateReport() }
         monitorText = addPanel(content, "Recorder status")
         monitorText.text = "Monitoring status not yet confirmed"
         addPanel(content, "Measurement rules").text =
@@ -207,7 +206,10 @@ class MainActivity : Activity() {
 
         val refreshButton = Button(this).apply {
             text = "Refresh"
-            setOnClickListener { refreshReadings() }
+            setOnClickListener {
+                refreshReadings()
+                refreshHistoryDisplay(true)
+            }
         }
         content.addView(refreshButton, LinearLayout.LayoutParams(-1, -2))
 
@@ -317,6 +319,47 @@ class MainActivity : Activity() {
             }
         })
         return body
+    }
+
+    /** Expensive all-history and 90-day capacity reports are explicit snapshots, not passive work. */
+    private fun addReportButton(parent: LinearLayout, heading: String, read: (RecorderDatabase) -> String) {
+        parent.addView(Button(this).apply {
+            text = heading
+            setOnClickListener {
+                if (reportLoading) {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setMessage("A history report is still being read. Open this report again after it finishes.")
+                        .setPositiveButton("Close",null).show()
+                } else {
+                    val snapshot = makeText(14f,Color.rgb(230,237,247),true).apply {
+                        text = "Reading recorded history…"
+                    }
+                    val reportScroll = ScrollView(this@MainActivity).apply { addView(snapshot) }
+                    val dialog = AlertDialog.Builder(this@MainActivity)
+                        .setTitle(heading).setView(reportScroll).setPositiveButton("Close",null).create()
+                    reportDialog = dialog
+                    dialog.setOnDismissListener { if (reportDialog === dialog) reportDialog = null }
+                    dialog.show()
+                    reportLoading = true
+                    Thread({
+                        val report = try {
+                            val db = RecorderDatabase(applicationContext)
+                            try { read(db) } finally { db.close() }
+                        } catch (e: Exception) {
+                            "Report read failed: ${e.javaClass.simpleName}: ${e.message ?: "unknown"}"
+                        }
+                        runOnUiThread {
+                            reportLoading = false
+                            if (!isFinishing && !isDestroyed && dialog.isShowing) {
+                                snapshot.setTextIfChanged(report)
+                                snapshot.setTextIsSelectable(true)
+                                reportScroll.post { reportScroll.scrollTo(0,0) }
+                            }
+                        }
+                    },"BatteryScopeOnDemandReport").start()
+                }
+            }
+        })
     }
 
     private fun batteryIntent(): Intent? =
@@ -765,54 +808,31 @@ class MainActivity : Activity() {
     }
 
     private fun refreshHistoryDisplay(force: Boolean) {
-        if (isFinishing || isDestroyed || !::historyText.isInitialized) return
+        if (isFinishing || isDestroyed || !::stageSummary.isInitialized) return
         val now = System.currentTimeMillis()
-        val elapsed = android.os.SystemClock.elapsedRealtime()
-        if (!historyRefreshGate.request(elapsed, force)) return
-        refreshCapacityDisplay()
-        Thread {
-            var database: RecorderDatabase? = null
-            val result = try {
-                database = RecorderDatabase(applicationContext)
-                database.chargingDashboard(now)
-            } catch (t: Throwable) {
-                RecorderDatabase.ChargingDashboard("History read failed: " + t.javaClass.simpleName + ": " + (t.message ?: "unknown"),emptyList(),emptyList())
-            } finally {
-                try { database?.close() } catch (_: Throwable) { }
+        if (!historyRefreshGate.request(android.os.SystemClock.elapsedRealtime(), force)) return
+        Thread({
+            val result = runCatching {
+                val database = RecorderDatabase(applicationContext)
+                try { database.chargingOverview(now) } finally { database.close() }
             }
             runOnUiThread {
                 val followUp = historyRefreshGate.finish()
-                if (!isFinishing && !isDestroyed && ::historyText.isInitialized) {
+                if (!isFinishing && !isDestroyed && ::stageSummary.isInitialized) {
                     dashboardScroll.refreshContent {
-                        historyText.setTextIfChanged(result.report)
-                        stageSummary.setTextIfChanged(compactChargingStages(result.stages))
-                        curvePanel.setCurves(result.curves)
+                        result.fold(onSuccess = { overview ->
+                            stageSummary.setTextIfChanged(compactChargingStages(overview.stages))
+                            curvePanel.setCurves(overview.curves)
+                        }, onFailure = {
+                            stageSummary.setTextIfChanged("Charging history unavailable • " + it.javaClass.simpleName +
+                                "\nOpen detailed history for diagnostics.")
+                            curvePanel.setCurves(emptyList())
+                        })
                     }
                     if (followUp) refreshHistoryDisplay(true)
                 }
             }
-        }.start()
-    }
-
-
-    private fun refreshCapacityDisplay() {
-        if (isFinishing || isDestroyed || !::capacityText.isInitialized) return
-        if (!capacityRefreshGate.request(android.os.SystemClock.elapsedRealtime(), true)) return
-        Thread {
-            val report = try {
-                val database = RecorderDatabase(applicationContext)
-                try { database.capacityEstimateReport() } finally { database.close() }
-            } catch (t: Throwable) {
-                "Capacity estimate failed: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}"
-            }
-            runOnUiThread {
-                val followUp = capacityRefreshGate.finish()
-                if (!isFinishing && !isDestroyed && ::capacityText.isInitialized) {
-                    capacityText.setTextIfChanged(report)
-                    if (followUp) refreshCapacityDisplay()
-                }
-            }
-        }.start()
+        },"BatteryScopeChargingOverview").start()
     }
 
     private fun updateHistoryOperations() {
