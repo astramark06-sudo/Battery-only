@@ -57,12 +57,12 @@ jobs:
           set +o pipefail
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platforms;android-35" "build-tools;36.0.0"
 
-      - name: Set up Gradle 8.9
+      - name: Set up Gradle 9.4.1
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
         with:
-          gradle-version: "8.9"
+          gradle-version: "9.4.1"
           cache-disabled: true
 
       - name: Run JVM unit tests and assemble debug APK
@@ -74,7 +74,7 @@ jobs:
         run: |
           APK="app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | tee apk-badging.txt
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | tee apk-badging.txt
           grep -q "package: name='com.batteryscope'" apk-badging.txt
           grep -q "versionCode='16'" apk-badging.txt
           grep -q "versionName='1.15'" apk-badging.txt
@@ -103,7 +103,7 @@ jobs:
           PY
           echo "Development debug artifact only; not a production update"
           sha256sum "$APK" | tee apk-sha256.txt
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" | tee apk-signing.txt
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK" | tee apk-signing.txt
           stat -c 'APK size: %s bytes' "$APK"
 
       - name: Android lint
@@ -166,12 +166,12 @@ jobs:
           set +o pipefail
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platforms;android-35" "build-tools;36.0.0"
 
-      - name: Set up Gradle 8.9
+      - name: Set up Gradle 9.4.1
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
         with:
-          gradle-version: "8.9"
+          gradle-version: "9.4.1"
           cache-disabled: true
 
       - name: Install emulator and Android 12L image

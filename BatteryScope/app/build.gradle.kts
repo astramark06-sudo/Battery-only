@@ -1,10 +1,10 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 android {
     namespace = "com.batteryscope"
     compileSdk = 35
+    buildToolsVersion = "36.0.0"
     defaultConfig {
         applicationId = "com.batteryscope"
         minSdk = 26
@@ -17,12 +17,18 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
+}
+kotlin {
+    compilerOptions {
+        // Keep the earlier language/API semantics while upgrading the compiler.
+        languageVersion = org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_0
+        apiVersion = org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_2_0
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
 }
 
 dependencies {
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.21")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("junit:junit:4.13.2")
@@ -43,6 +49,8 @@ tasks.register("reportResolvedDependencies") {
         )
         val file = layout.buildDirectory.file("reports/dependencies/resolved-debug.txt").get().asFile
         file.parentFile.mkdirs()
+        check(gradle.gradleVersion == "9.4.1") { "Unexpected Gradle version: " + gradle.gradleVersion }
+        val byScope = linkedMapOf<String,List<String>>()
         file.bufferedWriter().use { out ->
             out.appendLine("Gradle " + gradle.gradleVersion)
             out.appendLine("Java " + System.getProperty("java.version"))
@@ -51,11 +59,20 @@ tasks.register("reportResolvedDependencies") {
                 val unresolved = result.allDependencies.filterIsInstance<org.gradle.api.artifacts.result.UnresolvedDependencyResult>()
                 check(unresolved.isEmpty()) { "Unresolved dependencies in " + name + ": " + unresolved.map { it.attempted.displayName } }
                 out.appendLine("[" + name + "]")
-                result.allComponents.mapNotNull { it.id as? org.gradle.api.artifacts.component.ModuleComponentIdentifier }
+                val coordinates = result.allComponents.mapNotNull { it.id as? org.gradle.api.artifacts.component.ModuleComponentIdentifier }
                     .map { it.group + ":" + it.module + ":" + it.version }
-                    .distinct().sorted().forEach { out.appendLine(it) }
+                    .distinct().sorted()
+                byScope[name] = coordinates
+                coordinates.forEach { out.appendLine(it) }
             }
         }
+        val buildCoordinates = byScope.filterKeys { it.endsWith("BuildscriptClasspath") }.values.flatten().toSet()
+        check(buildCoordinates.filter { it.startsWith("org.jetbrains.kotlin:kotlin-gradle-plugin:") }.toSet() ==
+            setOf("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.21")) { "Patched Kotlin build plugin not confirmed" }
+        check(buildCoordinates.filter { it.startsWith("com.android.tools.build:gradle:") }.toSet() ==
+            setOf("com.android.tools.build:gradle:9.2.1")) { "Expected Android Gradle plugin not confirmed" }
+        check(byScope.getValue("debugRuntimeClasspath").filter { it.startsWith("org.jetbrains.kotlin:kotlin-stdlib:") }.toSet() ==
+            setOf("org.jetbrains.kotlin:kotlin-stdlib:2.4.21")) { "Patched runtime Kotlin version not confirmed" }
         println("Wrote " + file)
     }
 }
