@@ -14,6 +14,7 @@ import android.os.Build
 import android.provider.Settings
 import android.os.Bundle
 import android.net.Uri
+import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.Button
@@ -28,6 +29,9 @@ import java.util.Locale
 
 class MainActivity : Activity() {
     private lateinit var batteryManager: BatteryManager
+    private lateinit var dashboardScroll: DashboardScrollView
+    private lateinit var liveSummary: TextView
+    private lateinit var stageSummary: TextView
     private lateinit var batteryText: TextView
     private lateinit var chargerText: TextView
     private lateinit var diagnosticText: TextView
@@ -132,7 +136,8 @@ class MainActivity : Activity() {
             setPadding(margin, margin, margin, margin)
             setBackgroundColor(Color.rgb(8, 13, 22))
         }
-        val scroll = ScrollView(this)
+        val scroll = DashboardScrollView(this)
+        dashboardScroll = scroll
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, 0, 0, dp(12))
@@ -155,29 +160,44 @@ class MainActivity : Activity() {
         }
         content.addView(title)
         content.addView(subtitle)
-        monitorText = makeText(14f, Color.rgb(142, 226, 185), false)
-        monitorText.text = "Monitoring status not yet confirmed"
-        statusText.text = "No operation in progress"
-        content.addView(monitorText)
-        content.addView(statusText)
-        historyOperationText = makeText(13f, Color.rgb(155, 170, 191), false)
-        content.addView(historyOperationText)
-
-        batteryText = addPanel(content, "01  BATTERY TELEMETRY  •  ANDROID FRAMEWORK")
-        chargerText = addPanel(content, "02  POWER SUPPLY NODES  •  KERNEL")
-        diagnosticText = addPanel(content, "03  ACCESS, SOURCE & DATA QUALITY")
+        liveSummary = makeText(17f, Color.rgb(230,237,247), false).apply {
+            text = "Waiting for battery readings…"
+        }
+        content.addView(liveSummary)
+        stageSummary = makeText(14f, Color.rgb(230,237,247), false).apply {
+            text = "Charging stages (last 30 days)\nWaiting for history…"
+        }
+        content.addView(stageSummary)
         curvePanel = ChargingCurvePanel(this)
         content.addView(curvePanel, LinearLayout.LayoutParams(-1, -2))
-        historyText = addPanel(content, "04  CHARGING / DISCHARGING SESSIONS")
-        historyText.text = "Recorder starts automatically. Local history accumulates across days, weeks and months."
-        capacityText = addPanel(content, "05  BATTERY HEALTH & FULL-CHARGE CAPACITY")
-        capacityText.text = "Capacity estimate not available yet. Record several charging/discharging sessions with the recorder enabled."
+        batteryText = addPanel(content, "Battery readings")
+        chargerText = addPanel(content, "Charger / phone communication")
+        diagnosticText = addPanel(content, "Measurement quality & sources")
+        historyText = addPanel(content, "Detailed charging history")
+        historyText.text = "Waiting for history…"
+        capacityText = addPanel(content, "Battery health & capacity")
+        capacityText.text = "Capacity estimate not available yet."
+        monitorText = addPanel(content, "Recorder status")
+        monitorText.text = "Monitoring status not yet confirmed"
+        addPanel(content, "Measurement rules").text =
+            "Battery-side current is not charger input current. Raw charger/BMS/USB data is shown only when accessible. BatteryScope does not capture proprietary SuperDart packets, select a USB protocol or write charging controls."
 
-        val note = makeText(13f, Color.rgb(155, 170, 191), false).apply {
-            text = "Measurement rules: battery current is not USB input current. Only USB/charger supply nodes can report charger-side voltage/current. BatteryScope does not decode the proprietary SuperDart wire handshake, alter the selected USB protocol or write charging controls."
-            setPadding(dp(2), dp(10), dp(2), dp(12))
+        val toolsToggle = Button(this).apply { text = "Show history & settings tools" }
+        val toolsContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
         }
-        content.addView(note)
+        toolsToggle.setOnClickListener {
+            val opening = toolsContent.visibility != View.VISIBLE
+            toolsContent.visibility = if (opening) View.VISIBLE else View.GONE
+            toolsToggle.text = if (opening) "Hide history & settings tools" else "Show history & settings tools"
+        }
+        content.addView(toolsToggle)
+        content.addView(toolsContent)
+        statusText.text = "No operation in progress"
+        toolsContent.addView(statusText)
+        historyOperationText = makeText(13f, Color.rgb(155,170,191),false)
+        toolsContent.addView(historyOperationText)
 
         val refreshButton = Button(this).apply {
             text = "Refresh"
@@ -195,7 +215,7 @@ class MainActivity : Activity() {
                     .setPositiveButton("Prepare") { _, _ -> exportRecorderHistory() }.show()
             }
         }
-        content.addView(exportButton, LinearLayout.LayoutParams(-1, -2))
+        toolsContent.addView(exportButton, LinearLayout.LayoutParams(-1, -2))
         val backupButton = Button(this).apply {
             text = "Prepare portable history backup"
             setOnClickListener {
@@ -206,12 +226,12 @@ class MainActivity : Activity() {
                     .setPositiveButton("Save") { _, _ -> exportRecorderHistory(true) }.show()
             }
         }
-        content.addView(backupButton, LinearLayout.LayoutParams(-1, -2))
-        content.addView(Button(this).apply {
+        toolsContent.addView(backupButton, LinearLayout.LayoutParams(-1, -2))
+        toolsContent.addView(Button(this).apply {
             text = "Save / retry prepared export"
             setOnClickListener { choosePreparedExport(false) }
         }, LinearLayout.LayoutParams(-1, -2))
-        content.addView(Button(this).apply {
+        toolsContent.addView(Button(this).apply {
             text = "Discard prepared copy"
             setOnClickListener { choosePreparedExport(true) }
         }, LinearLayout.LayoutParams(-1, -2))
@@ -219,8 +239,8 @@ class MainActivity : Activity() {
             text = "Restore earlier history backup"
             setOnClickListener { chooseHistoryBackup() }
         }
-        content.addView(restoreButton, LinearLayout.LayoutParams(-1, -2))
-        content.addView(Button(this).apply {
+        toolsContent.addView(restoreButton, LinearLayout.LayoutParams(-1, -2))
+        toolsContent.addView(Button(this).apply {
             text = "Recover earlier history with exact overlap"
             setOnClickListener { chooseHistoryBackup(exactOverlap = true) }
         }, LinearLayout.LayoutParams(-1, -2))
@@ -228,16 +248,16 @@ class MainActivity : Activity() {
             text = "Import original BatteryScope CSV"
             setOnClickListener { chooseHistoryBackup(true) }
         }
-        content.addView(legacyButton, LinearLayout.LayoutParams(-1, -2))
+        toolsContent.addView(legacyButton, LinearLayout.LayoutParams(-1, -2))
         val batterySettingsButton = Button(this).apply {
             text = "Battery optimisation settings"
             setOnClickListener { openBatteryOptimisationSettings() }
         }
-        content.addView(batterySettingsButton, LinearLayout.LayoutParams(-1, -2))
+        toolsContent.addView(batterySettingsButton, LinearLayout.LayoutParams(-1, -2))
         samplingModeButton = Button(this).apply {
             setOnClickListener { toggleSamplingMode() }
         }
-        content.addView(samplingModeButton, LinearLayout.LayoutParams(-1, -2))
+        toolsContent.addView(samplingModeButton, LinearLayout.LayoutParams(-1, -2))
         updateSamplingModeButton()
 
         scroll.addView(content)
@@ -266,21 +286,27 @@ class MainActivity : Activity() {
             if (mono) typeface = Typeface.MONOSPACE
             setPadding(dp(10), dp(10), dp(10), dp(10))
             setBackgroundColor(Color.rgb(20, 29, 43))
-            setTextIsSelectable(true)
+            setTextIsSelectable(false)
         }
 
     private fun addPanel(parent: LinearLayout, heading: String): TextView {
-        val label = TextView(this).apply {
+        // Detached text holder. Open dialogs keep their own immutable snapshot.
+        val body = makeText(14f,Color.rgb(230,237,247),true)
+        parent.addView(Button(this).apply {
             text = heading
-            textSize = 13f
-            if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
-            setTextColor(Color.rgb(123, 177, 242))
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(2), dp(12), dp(2), dp(5))
-        }
-        val body = makeText(14f, Color.rgb(230, 237, 247), true)
-        parent.addView(label)
-        parent.addView(body)
+            setOnClickListener {
+                val snapshot = makeText(14f,Color.rgb(230,237,247),true).apply {
+                    text = body.text.toString().ifBlank { "Waiting for data…" }
+                    setTextIsSelectable(true)
+                }
+                val reportScroll = ScrollView(this@MainActivity).apply { addView(snapshot) }
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle(heading)
+                    .setView(reportScroll)
+                    .setPositiveButton("Close",null)
+                    .show()
+            }
+        })
         return body
     }
 
@@ -568,19 +594,34 @@ class MainActivity : Activity() {
             append("Refresh: ${SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())} • 2-second dashboard refresh")
         }
 
+        val compactReport = buildString {
+            appendLine("${reading.percent?.let { "$it%" } ?: "—"}  •  ${reading.status}  •  ${reading.plugged}")
+            appendLine("Temperature: " + format(reading.temperatureC,"°C"))
+            appendLine("Battery: " + (reading.rawVoltageMv?.takeIf { voltageAssessment.usable }?.let { "$it mV" } ?: "voltage unavailable") +
+                " / " + format(currentMa,"mA"))
+            appendLine("Battery-side power: " + format(estimatedBatteryPowerW,"W"))
+            appendLine("Advertised limits: " + format(reading.maxChargingVoltageUv?.div(1_000_000.0),"V") +
+                " / " + format(reading.maxChargingCurrentUa?.div(1000.0),"mA"))
+            append("Charger input / active protocol: unverified")
+        }
         runOnUiThread {
             if (!isFinishing && !isDestroyed) {
-                monitorText.text = statusReport + "\nRecorder: " + BatteryRecorderService.liveHealthReport()
-                batteryText.text = batteryReport
-                chargerText.text = chargerReport
-                diagnosticText.text = diagnosticReport
+                dashboardScroll.refreshContent {
+                    liveSummary.setTextIfChanged(compactReport)
+                    monitorText.setTextIfChanged(statusReport + "\nRecorder: " + BatteryRecorderService.liveHealthReport())
+                    batteryText.setTextIfChanged(batteryReport)
+                    chargerText.setTextIfChanged(chargerReport)
+                    diagnosticText.setTextIfChanged(diagnosticReport)
+                }
                 refreshHistoryDisplay(false)
             }
         }
         } catch (t: Throwable) {
             runOnUiThread {
-                if (!isFinishing && !isDestroyed) diagnosticText.text =
-                    "LIVE TELEMETRY READ FAILED: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}"
+                if (!isFinishing && !isDestroyed) dashboardScroll.refreshContent {
+                    diagnosticText.setTextIfChanged("LIVE TELEMETRY READ FAILED: ${t.javaClass.simpleName}: ${t.message ?: "unknown"}")
+                    liveSummary.setTextIfChanged("Live readings unavailable. See measurement quality & sources.")
+                }
             }
         } finally {
             telemetryReadInFlight.set(false)
@@ -672,8 +713,11 @@ class MainActivity : Activity() {
             runOnUiThread {
                 val followUp = historyRefreshGate.finish()
                 if (!isFinishing && !isDestroyed && ::historyText.isInitialized) {
-                    historyText.text = result.first
-                    curvePanel.setCurves(result.second)
+                    dashboardScroll.refreshContent {
+                        historyText.setTextIfChanged(result.first)
+                        stageSummary.setTextIfChanged(compactChargingStages(result.first))
+                        curvePanel.setCurves(result.second)
+                    }
                     if (followUp) refreshHistoryDisplay(true)
                 }
             }
@@ -694,7 +738,7 @@ class MainActivity : Activity() {
             runOnUiThread {
                 val followUp = capacityRefreshGate.finish()
                 if (!isFinishing && !isDestroyed && ::capacityText.isInitialized) {
-                    capacityText.text = report
+                    capacityText.setTextIfChanged(report)
                     if (followUp) refreshCapacityDisplay()
                 }
             }
@@ -703,8 +747,10 @@ class MainActivity : Activity() {
 
     private fun updateHistoryOperations() {
         val state = HistoryOperations.state
-        historyOperationText.text = state.message + "\nPrepared private exports: " + state.ready.size +
-            " • older unverified copies: " + state.legacy.size + " • interrupted files: " + state.interrupted.size
+        dashboardScroll.refreshContent {
+            historyOperationText.setTextIfChanged(state.message + "\nPrepared private exports: " + state.ready.size +
+                " • older unverified copies: " + state.legacy.size + " • interrupted files: " + state.interrupted.size)
+        }
         if (state.restoreRevision != observedRestoreRevision) {
             observedRestoreRevision = state.restoreRevision
             refreshHistoryDisplay(true)

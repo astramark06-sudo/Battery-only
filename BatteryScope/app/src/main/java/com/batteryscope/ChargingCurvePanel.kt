@@ -23,6 +23,8 @@ internal class ChargingCurvePanel(context: Context) : LinearLayout(context) {
     private val tempLabel = label()
     private val tempPlot = DotPlot(context, Color.rgb(255,190,120))
     private val details = label()
+    private val detailsToggle = Button(context)
+    private var detailsExpanded = false
     private var curves = emptyList<ChargingProfile.Curve>()
     private var selected = 0
 
@@ -51,8 +53,14 @@ internal class ChargingCurvePanel(context: Context) : LinearLayout(context) {
         addView(socPlot,LayoutParams(-1,dp(120)))
         addView(tempLabel)
         addView(tempPlot,LayoutParams(-1,dp(120)))
+        detailsToggle.text = "Show chart checkpoints"
+        detailsToggle.setOnClickListener {
+            detailsExpanded = !detailsExpanded
+            render()
+        }
+        addView(detailsToggle)
         addView(details)
-        details.setTextIsSelectable(true)
+        details.setTextIsSelectable(false)
         render()
     }
 
@@ -66,22 +74,24 @@ internal class ChargingCurvePanel(context: Context) : LinearLayout(context) {
     private fun render() {
         val c = curves.getOrNull(selected)
         next.isEnabled = curves.size > 1
-        next.text = if (selected+1 < curves.size) "Show earlier segment" else "Show newest segment"
+        next.setTextIfChanged(if (selected+1 < curves.size) "Show earlier segment" else "Show newest segment")
+        detailsToggle.setTextIfChanged(if (detailsExpanded) "Hide chart checkpoints" else "Show chart checkpoints")
         if (c == null) {
-            description.text = "No eligible recorded charging segments."
-            listOf(socLabel,socPlot,tempLabel,tempPlot,details).forEach { it.visibility = View.GONE }
+            description.setTextIfChanged("No eligible recorded charging segments.")
+            listOf(socLabel,socPlot,tempLabel,tempPlot,details,detailsToggle).forEach { it.visibility = View.GONE }
             return
         }
-        listOf(socLabel,socPlot,tempLabel,details).forEach { it.visibility = View.VISIBLE }
+        listOf(socLabel,socPlot,tempLabel,detailsToggle).forEach { it.visibility = View.VISIBLE }
+        details.visibility = if (detailsExpanded) View.VISIBLE else View.GONE
         val points = c.points()
         val span = c.last.elapsed-c.first.elapsed
         val start = c.first.wallMs?.let { DateFormat.getDateTimeInstance().format(Date(it)) } ?: "unknown wall time"
-        description.text = String.format(Locale.US,
+        description.setTextIfChanged(String.format(Locale.US,
             "Segment %d of %d (newest first) • %s • %s\n%.2f observed minutes • %d of %d checkpoints shown. Separate segments may have gaps; not total connected time.",
-            selected+1,curves.size,c.first.plug,start,span/60_000.0,points.size,c.count)
+            selected+1,curves.size,c.first.plug,start,span/60_000.0,points.size,c.count))
         fun x(s: ChargingProfile.Sample): Float =
             if (span > 0L) ((s.elapsed-c.first.elapsed).toDouble()/span).toFloat() else 0.5f
-        socLabel.text = "Battery level • bottom 0%, top 100% • elapsed time →"
+        socLabel.setTextIfChanged("Battery level • bottom 0%, top 100% • elapsed time →")
         socPlot.setDots(points.mapNotNull { s -> s.percent?.let { x(s) to it/100f } })
         val temperatures = points.mapNotNull { s ->
             s.temperatureC?.takeIf { it in -100.0..100.0 }?.let { x(s) to it }
@@ -89,7 +99,7 @@ internal class ChargingCurvePanel(context: Context) : LinearLayout(context) {
         val fullTemperature = "All observed segment temperatures: " + c.observedTemperatureText() +
             " (before thinning)"
         if (temperatures.isEmpty()) {
-            tempLabel.text = "Battery temperature • no usable retained readings\n" + fullTemperature
+            tempLabel.setTextIfChanged("Battery temperature • no usable retained readings\n" + fullTemperature)
             tempPlot.visibility = View.GONE
             tempPlot.setDots(emptyList())
         } else {
@@ -97,12 +107,12 @@ internal class ChargingCurvePanel(context: Context) : LinearLayout(context) {
             val bounds = checkNotNull(c.observedTemperatureBounds())
             val lo = floor(bounds.first/5.0)*5.0
             val hi = maxOf(lo+5.0,ceil(bounds.second/5.0)*5.0)
-            tempLabel.text = String.format(Locale.US,"Battery temperature • bottom %.0f °C, top %.0f °C • elapsed time →",lo,hi) +
-                "\n" + fullTemperature
+            tempLabel.setTextIfChanged(String.format(Locale.US,"Battery temperature • bottom %.0f °C, top %.0f °C • elapsed time →",lo,hi) +
+                "\n" + fullTemperature)
             tempPlot.visibility = View.VISIBLE
             tempPlot.setDots(temperatures.map { it.first to ((it.second-lo)/(hi-lo)).toFloat() })
         }
-        details.text = buildString {
+        details.setTextIfChanged(buildString {
             appendLine("Dots are actual retained samples; no interpolation.")
             appendLine("Elapsed min | SOC | Battery temperature")
             points.forEach { s ->
@@ -111,7 +121,7 @@ internal class ChargingCurvePanel(context: Context) : LinearLayout(context) {
                 } ?: "unavailable"
                 appendLine(String.format(Locale.US,"%.2f | %d%% | %s",(s.elapsed-c.first.elapsed)/60_000.0,s.percent,temp))
             }
-        }
+        })
     }
 
     private class DotPlot(context: Context, private val color: Int) : View(context) {
@@ -119,6 +129,7 @@ internal class ChargingCurvePanel(context: Context) : LinearLayout(context) {
         private var dots = emptyList<Pair<Float,Float>>()
         init { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
         fun setDots(values: List<Pair<Float,Float>>) {
+            if (dots == values) return
             dots = values
             invalidate()
         }

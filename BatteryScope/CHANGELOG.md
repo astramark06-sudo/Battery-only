@@ -1,5 +1,11 @@
 # BatteryScope changelog
 
+## 2026-11-25 — Compact charging dashboard and passive-refresh scroll fix
+
+- User reported excessive text and automatic scrolling on refresh. Previous activity rewrote multiple large selectable TextViews every two seconds. Main screen now shows concise battery/charger summary, three charging stages and native graphs. Full readings, raw charger/phone communication evidence, quality, history, capacity, recorder status and measurement rules remain accessible through explicit snapshot dialogs. Open dialogs do not receive live text updates; reopen to refresh. Export/backup/import/settings controls and operation messages remain behind a user-controlled tools section. Chart checkpoints collapse by default.
+- Passive refresh avoids identical text writes, uses non-selectable main-screen text, and preserves current scroll offset across refresh-triggered layouts (clamped if content shrinks below it). Capture at layout time respects intervening user scrolling. Actual handset acceptance remains required. Added Android scroll and summary regressions and extended chart test for collapsed/expanded checkpoints. No collection, database, CSV/backup, permissions, identity, signing or control changes.
+- Prior stage source 01199413 passed Android 45552713865 and signing 45552713872. New cumulative CI required. Next inspect exact branch CI and repair actual failures; verify debug artifact and device acceptance before update. Trusted installed signer remains unresolved. No merge/release/uninstall or history mutation.
+
 ## 2026-11-25 — User-prioritized charger/phone/battery evidence and charging stages
 
 - User clarified that the primary objective is charger/phone/battery communication evidence and 0–20%, 20–80%, 80–100% charging performance. Existing ordinary-app telemetry already separates Android battery state/current/temperature, advertised maxima, readable raw external/BMS/USB-C/PD nodes and unavailable charger input. No direct proprietary handshake capture, privileged access, hardware modification or charging control. Phone is the intermediary; raw flags are not protocol packets.

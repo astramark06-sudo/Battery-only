@@ -23,7 +23,8 @@ class ChargingCurvePanelAndroidTest {
             outcome = runCatching {
                 val panel = ChargingCurvePanel(instrumentation.targetContext)
                 val children = (0 until panel.childCount).map { panel.getChildAt(it) }
-                val button = children.filterIsInstance<Button>().single()
+                val button = children.filterIsInstance<Button>().single { it.text.toString().contains("segment") }
+                val checkpoints = children.filterIsInstance<Button>().single { it.text.toString().contains("checkpoints") }
                 val plots = children.filterNot { it is TextView }
                 assertEquals(2,plots.size)
                 fun labels() = children.filterIsInstance<TextView>()
@@ -58,6 +59,8 @@ class ChargingCurvePanelAndroidTest {
                 layoutPanel()
                 assertTrue(button.isEnabled)
                 assertTrue(labels().contains("Segment 1 of 2"))
+                assertFalse(labels().contains("0.50 | 71% | 36.0"))
+                assertTrue(checkpoints.performClick())
                 assertTrue(labels().contains("0.50 | 71% | 36.0"))
                 assertTrue(labels().contains("All observed segment temperatures: 35.0 to 36.0 °C (2 samples); usable 2/2"))
                 assertTrue(plots.all { it.visibility == View.VISIBLE })
@@ -90,6 +93,8 @@ class ChargingCurvePanelAndroidTest {
                 assertTrue(labels().contains("no usable retained readings"))
                 assertTrue(labels().contains("37.0 to 37.0 °C (1 samples); usable 1/64"))
                 assertEquals(View.GONE,plots[1].visibility)
+                assertTrue(checkpoints.performClick())
+                assertFalse(labels().contains("Elapsed min | SOC | Battery temperature"))
                 panel.setCurves(emptyList())
                 assertFalse(button.isEnabled)
                 assertTrue(plots.all { it.visibility == View.GONE })
