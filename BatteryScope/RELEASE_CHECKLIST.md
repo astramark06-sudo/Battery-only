@@ -1,5 +1,10 @@
 # BatteryScope release checklist
 
+## 2026-11-25 — Native recent charging observation plots
+
+- Added native SOC and battery-temperature scatter plots for up to eight recent eligible continuous charging segments, newest first, with a segment selector and accessible numeric checkpoint table. Observed points only; no interpolation, connecting lines, assumed watts, or joining across recording gaps. A single sample is centered on the elapsed-time axis. Missing temperature is explicitly unavailable. Each segment retains at most 16 points. Text report and plots use the same bounded database snapshot and worker query; no extra scan or new stored fields.
+- Added JVM test for segment retention/order and recorded start timestamp. Android compilation, instrumentation, visual layout and physical device verification required for this commit. No schema, identity, permissions, signing, history or CSV/backup changes. Prior source head 0435aa54 has successful build/unit/lint/metadata and signing-policy jobs; its emulator run must finish before advancing branch.
+
 ## 2026-11-25 — Charging curve checkpoints and SOC-band temperature
 
 - Charging-focused 30-day report now includes per-SOC-band observed battery temperature ranges and the most recent eligible same-source, known-same-boot charging segment as elapsed-time/SOC/temperature checkpoints. Adaptive sequence thinning bounds retained points to 16, preserves observed endpoints, and never interpolates. A recording gap, invalid SOC, unknown boot, reboot or source/state change breaks the segment. A recorded decline remains visible. No electrical quantities are inferred. The checkpoint table is groundwork for a graphical chart, not a native graph or a complete plug-in session.

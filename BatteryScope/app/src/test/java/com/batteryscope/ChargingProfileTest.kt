@@ -61,6 +61,21 @@ class ChargingProfileTest {
         assertTrue(r.report().contains("sampled temperature"))
     }
 
+    @Test fun keepsOnlyEightRecentSegmentsNewestFirst() {
+        val r = ChargingProfile()
+        repeat(12) { i ->
+            val start = i*200_000L
+            r.accept(sample(start,i).copy(wallMs=1_000_000L+start))
+            r.accept(sample(start+30_000L,i+1))
+        }
+        val curves = r.recentCurves()
+        assertEquals(8,curves.size)
+        assertEquals((11 downTo 4).toList(),curves.map { it.first.percent })
+        assertTrue(curves.all { it.count == 2L })
+        assertEquals(3_200_000L,curves.first().first.wallMs)
+        assertEquals(r.latestCurve,curves.first())
+    }
+
     @Test fun rejectsGapsBootChangesReversalsAndCrossBandJumps() {
         val r = ChargingProfile()
         r.accept(sample(1000,15))

@@ -34,6 +34,7 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var monitorText: TextView
     private lateinit var historyText: TextView
+    private lateinit var curvePanel: ChargingCurvePanel
     private lateinit var capacityText: TextView
     private val historyRefreshGate = RefreshGate(300_000L)
     private val capacityRefreshGate = RefreshGate(0L)
@@ -165,6 +166,8 @@ class MainActivity : Activity() {
         batteryText = addPanel(content, "01  BATTERY TELEMETRY  •  ANDROID FRAMEWORK")
         chargerText = addPanel(content, "02  POWER SUPPLY NODES  •  KERNEL")
         diagnosticText = addPanel(content, "03  ACCESS, SOURCE & DATA QUALITY")
+        curvePanel = ChargingCurvePanel(this)
+        content.addView(curvePanel, LinearLayout.LayoutParams(-1, -2))
         historyText = addPanel(content, "04  CHARGING / DISCHARGING SESSIONS")
         historyText.text = "Recorder starts automatically. Local history accumulates across days, weeks and months."
         capacityText = addPanel(content, "05  BATTERY HEALTH & FULL-CHARGE CAPACITY")
@@ -660,16 +663,17 @@ class MainActivity : Activity() {
             var database: RecorderDatabase? = null
             val result = try {
                 database = RecorderDatabase(applicationContext)
-                database.historySummary(now, chargingFocus = true)
+                database.chargingDashboard(now)
             } catch (t: Throwable) {
-                "History read failed: " + t.javaClass.simpleName + ": " + (t.message ?: "unknown")
+                ("History read failed: " + t.javaClass.simpleName + ": " + (t.message ?: "unknown")) to emptyList<ChargingProfile.Curve>()
             } finally {
                 try { database?.close() } catch (_: Throwable) { }
             }
             runOnUiThread {
                 val followUp = historyRefreshGate.finish()
                 if (!isFinishing && !isDestroyed && ::historyText.isInitialized) {
-                    historyText.text = result
+                    historyText.text = result.first
+                    curvePanel.setCurves(result.second)
                     if (followUp) refreshHistoryDisplay(true)
                 }
             }

@@ -6,7 +6,7 @@ import java.util.Locale
 internal class ChargingProfile {
     data class Sample(val elapsed: Long, val boot: Int?, val percent: Int?, val state: String,
         val plug: String, val voltageMv: Int?, val currentUa: Long?, val temperatureC: Double?,
-        val counterUah: Long?, val usbVoltage: Long?, val usbCurrent: Long?)
+        val counterUah: Long?, val usbVoltage: Long?, val usbCurrent: Long?, val wallMs: Long? = null)
     class Range {
         var count = 0L
             private set
@@ -54,6 +54,9 @@ internal class ChargingProfile {
             if (it.last() === last) it else it + last
         }
     }
+    private val curves = ArrayList<Curve>()
+    /** Newest first; bounded to eight distinct observed segments. */
+    fun recentCurves(): List<Curve> = curves.asReversed().toList()
     var latestCurve: Curve? = null
         private set
     val bandTemperatures = List(10) { Range() }
@@ -94,7 +97,12 @@ internal class ChargingProfile {
                 if (curve != null && before === curve.last && before.plug == s.plug &&
                     RecorderTimeMath.isRateInterval(s.elapsed-before.elapsed,before.boot,s.boot)) {
                     curve.add(s)
-                } else latestCurve = Curve(s)
+                } else {
+                    val next = Curve(s)
+                    latestCurve = next
+                    curves.add(next)
+                    if (curves.size > 8) curves.removeAt(0)
+                }
             }
         }
         if (BatteryMeasurementQuality.voltage(s.voltageMv).usable) validVoltage++
