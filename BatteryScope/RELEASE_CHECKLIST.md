@@ -1,5 +1,9 @@
 # BatteryScope release checklist
 
+## Current verified acceptance — 2026-11-25
+
+**Source `b1811ba9482f741b884a4a706324a7d8ecdede95` passed cumulative CI.** See [CURRENT_ACCEPTANCE.md](CURRENT_ACCEPTANCE.md) for the authoritative current evidence, all 40 historical audit dispositions and remaining gates. 104 JVM + 37 Android + 17 signing/advisory tests passed; zero known OSV matches across 123 resolved Maven coordinates. The current debug APK is not an authorized update or release. The agreed charging-first repository implementation and its automated acceptance checks are complete; physical measurement, recording overhead/continuity, trusted signing identity and data-preserving update remain unverified. Earlier entries below are historical, not current instructions to promote already-verified batches. Do not restart development or repeat unchanged checks unless new evidence identifies a scoped defect.
+
 ## 2026-11-25 — Batch 10 extension: actual post-upgrade advisory remediation
 
 - Batch 9 659ce163 build job passed; archive 15045533863 SHA-256 968cae9ec08b684a3e5b9e67104883e5a5c613072f2b7dec3948f688a8612f35 verified CRC and SHA; 103 JVM tests, no failures/errors/skips; lint 67 warnings/0 errors. APK 1,185,533 bytes SHA-256 c15f53b0f29f60fe8f081114f74c0ffa91ef95b676e2f0a6d1f0d29265b6a92f; independently verified RSA v2 protected-content digest and signer 5015225f66d783a2feb5d68989b955b966cb8bd0339dc7496c1748a4d9bc3a44, tamper rejected, exact five permissions. Signing/advisory-unit CI 45663973742 passed. Android 45663973732 still running. No installed signer match.
@@ -281,12 +285,14 @@ A source commit is not a release. Keep build verification, artifact integrity, i
 ## Current cumulative acceptance gates (supersede historical checks below)
 
 - [x] Batch 8 full Android and signing/advisory verification, including concurrent restore and large-history tests.
-- [ ] Batch 9 toolchain and selected dependency versions confirmed by cumulative build, emulator, lint and live OSV report.
-- [ ] Latest cumulative source verified after any changes; compare exact advisory findings and review remaining build/test matches. No unresolved runtime matches accepted.
-- [ ] Exact current APK ZIP/hash, package, version, five permissions, signer and protected-content checks; identify debug candidate separately from update compatibility.
-- [ ] Physical handset normal-use measurement and recording continuity/overhead validation, independently trusted installed signing certificate/version, history preservation. Do not force discharge or perform hardware changes.
-- [ ] Verify current app controls/collection scope; legacy app attribution rows are preserved but not newly collected. No new broad tracking or permission.
-- [ ] No release/merge/uninstall without explicit authorization. Original portable backup remains unencrypted and does not authenticate originating device; no claim of encrypted or device-bound backups.
+- [x] Batch 9 toolchain and selected dependency versions confirmed by cumulative build, emulator, lint and live OSV report.
+- [x] Latest cumulative source verified: batch 10, zero known OSV matches in the resolved Maven inventory. No unresolved runtime matches in that report. Scan coverage limits remain documented.
+- [x] Exact current APK ZIP/hash, package, version, five permissions, signer and protected-content checks; development debug candidate only, not update compatibility.
+- [ ] Physical handset normal-use measurement and recording continuity/overhead validation, independently trusted installed signing certificate/version, history preservation. Do not force discharge or perform hardware changes. All sub-gates must pass before checking this item.
+- [x] Current app controls/collection scope verified in source, packaged permission checks and emulator tests; legacy app attribution rows are preserved but not newly collected. No new broad tracking or permission.
+- [x] No release/merge/uninstall performed. Original portable backup remains unencrypted and does not authenticate originating device; no claim of encrypted or device-bound backups.
+
+**Current gate tally: 6/7 (85.7%) checklist items verified.** This is an unweighted gate count, not an estimate of engineering effort or overall release readiness. The remaining gate contains several independent, mandatory external checks; passing the six software/policy items does not authorize installation or release.
 
 ## Historical release checklist (not current release acceptance)
 

@@ -1,5 +1,9 @@
 # BatteryScope signing and update safety
 
+## Current verified development candidate — 2026-11-25
+
+Batch 10 source `b1811ba9482f741b884a4a706324a7d8ecdede95` generated a debuggable APK with SHA-256 `1b4ede7edad2e12d5214392ee1424323b077dd7c5275ba1ab893d5ade848ff9f`, certificate SHA-256 `d11b8a2e438e7495ed644571f2b7b32f1c9eabe8a069cf800f49edc553d5672e`. Independently verified RSA v2 signature and protected content; deliberate mutation rejected. The certificate differs from the documented historical v1.14 and v1.15 debug certificates. The actual installed signer is still unknown; no safe update or release is established. See [CURRENT_ACCEPTANCE.md](CURRENT_ACCEPTANCE.md).
+
 ## Current blocker
 
 The historical installed v1.14 debug certificate differs from later CI-generated v1.15 certificates. Ephemeral CI debug APKs are **not** safe in-place updates unless the installed certificate is independently established and exactly matches. A new key cannot recreate the previous signing identity. This document does not authorize uninstalling an existing installation or deleting app data.
@@ -18,7 +22,7 @@ Alternatively, if the installed certificate and version code are independently k
 
 Both APKs are inspected using apksigner verify and aapt; the gate checks the package ID, certificate, version code and unchanged candidate file digest. It intentionally rejects unknown signing identity, multiple signers, certificate mismatches, downgrades and same-version release candidates. Same-version comparison is available only with explicit --allow-same-version for development. Certificate rotation/lineage requires separate expert verification.
 
-For a proposed non-debug production update, add `--release-version-name EXPECTED_VERSION`. This additionally requires the exact candidate versionName, application metadata, no debuggable marker and no INTERNET permission. The normal ACCESS_NETWORK_STATE permission is permitted for local transport observation. The same-version override is rejected in release mode. All comparisons still require independently trusted installed identity.
+For a proposed non-debug production update, add `--release-version-name EXPECTED_VERSION`. This additionally requires the exact candidate versionName, application metadata, no debuggable marker and no INTERNET permission. The helper's release-mode metadata check rejects INTERNET; it is not a full permission-allowlist checker. The current charging-first app also excludes ACCESS_NETWORK_STATE and PACKAGE_USAGE_STATS. Separately require the exact five permitted manifest permissions documented in CURRENT_ACCEPTANCE.md for any candidate. Do not interpret a passing helper result as permission-policy or release approval. The same-version override is rejected in release mode. All comparisons still require independently trusted installed identity.
 
 IDENTITY_MATCH_ONLY is not installation, migration, or release approval. Record the exact candidate hash, CI run, migration backup and physical-device validation before release.
 

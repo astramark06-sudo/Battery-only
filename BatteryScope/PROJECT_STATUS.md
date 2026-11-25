@@ -1,5 +1,9 @@
 # BatteryScope project status and engineering handoff
 
+## Current verified acceptance — 2026-11-25
+
+**Source `b1811ba9482f741b884a4a706324a7d8ecdede95` passed cumulative CI.** See [CURRENT_ACCEPTANCE.md](CURRENT_ACCEPTANCE.md) for the authoritative current evidence, all 40 historical audit dispositions and remaining gates. 104 JVM + 37 Android + 17 signing/advisory tests passed; zero known OSV matches across 123 resolved Maven coordinates. The current debug APK is not an authorized update or release. The agreed charging-first repository implementation and its automated acceptance checks are complete; physical measurement, recording overhead/continuity, trusted signing identity and data-preserving update remain unverified. Earlier entries below are historical, not current instructions to promote already-verified batches. Do not restart development or repeat unchanged checks unless new evidence identifies a scoped defect.
+
 ## 2026-11-25 — Batch 10 extension: actual post-upgrade advisory remediation
 
 - Batch 9 659ce163 build job passed; archive 15045533863 SHA-256 968cae9ec08b684a3e5b9e67104883e5a5c613072f2b7dec3948f688a8612f35 verified CRC and SHA; 103 JVM tests, no failures/errors/skips; lint 67 warnings/0 errors. APK 1,185,533 bytes SHA-256 c15f53b0f29f60fe8f081114f74c0ffa91ef95b676e2f0a6d1f0d29265b6a92f; independently verified RSA v2 protected-content digest and signer 5015225f66d783a2feb5d68989b955b966cb8bd0339dc7496c1748a4d9bc3a44, tamper rejected, exact five permissions. Signing/advisory-unit CI 45663973742 passed. Android 45663973732 still running. No installed signer match.
