@@ -31,6 +31,7 @@ class BatteryRecorderService : Service() {
     private var databaseAvailable = true
     private lateinit var batteryManager: BatteryManager
     @Volatile private var batteryIntent: Intent? = null
+    private val chargerLabels = ChargerLabelTracker()
     private var lastSampleState: String? = null
     private var lastSamplePlug: String? = null
     private var lastBatteryPercentStatus: String? = null
@@ -52,9 +53,18 @@ class BatteryRecorderService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val action = intent?.action ?: return
             when (action) {
-                Intent.ACTION_BATTERY_CHANGED -> batteryIntent = intent
-                Intent.ACTION_POWER_CONNECTED -> event("POWER_CONNECTED", "Android power-connected broadcast")
-                Intent.ACTION_POWER_DISCONNECTED -> event("POWER_DISCONNECTED", "Android power-disconnected broadcast")
+                Intent.ACTION_BATTERY_CHANGED -> {
+                    batteryIntent = intent
+                    chargerLabels.observeSource(plugName(intent))
+                }
+                Intent.ACTION_POWER_CONNECTED -> {
+                    chargerLabels.boundary()
+                    event("POWER_CONNECTED", "Android power-connected broadcast")
+                }
+                Intent.ACTION_POWER_DISCONNECTED -> {
+                    chargerLabels.boundary()
+                    event("POWER_DISCONNECTED", "Android power-disconnected broadcast")
+                }
                 Intent.ACTION_SCREEN_ON -> event("SCREEN_ON", "Display became interactive")
                 Intent.ACTION_SCREEN_OFF -> event("SCREEN_OFF", "Display became non-interactive")
                 Intent.ACTION_BATTERY_LOW -> event("BATTERY_LOW", "Android battery-low broadcast")
@@ -113,6 +123,7 @@ class BatteryRecorderService : Service() {
         inventoryWorker = HandlerThread("BatteryScopeInventory").apply { start() }
         inventoryHandler = Handler(inventoryWorker.looper)
         batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        chargerLabels.observeSource(plugName(batteryIntent))
         createChannel()
         registerEvents()
     }
@@ -291,6 +302,18 @@ class BatteryRecorderService : Service() {
         receiverRegistered = true
     }
 
+    private fun plugName(intent: Intent?): String {
+        val plugCode = BatteryBroadcastMetadata.int(intent,BatteryManager.EXTRA_PLUGGED)
+        return when (plugCode) {
+            BatteryManager.BATTERY_PLUGGED_AC -> "AC"
+            BatteryManager.BATTERY_PLUGGED_USB -> "USB"
+            BatteryManager.BATTERY_PLUGGED_WIRELESS -> "WIRELESS"
+            8 -> "DOCK"
+            null, -1 -> "UNKNOWN"
+            else -> if (plugCode == 0) "NONE" else if (plugCode > 0) "OTHER_" + plugCode else "UNKNOWN"
+        }
+    }
+
     private fun sample(elapsed: Long) {
         val now = System.currentTimeMillis()
         val inventory = inventoryHandoff.readyFor(elapsed)
@@ -329,15 +352,8 @@ class BatteryRecorderService : Service() {
             BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "NOT_CHARGING"
             else -> "UNKNOWN"
         }
-        val plugCode = intent?.takeIf { it.hasExtra(BatteryManager.EXTRA_PLUGGED) }?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1)
-        val plug = when (plugCode) {
-            BatteryManager.BATTERY_PLUGGED_AC -> "AC"
-            BatteryManager.BATTERY_PLUGGED_USB -> "USB"
-            BatteryManager.BATTERY_PLUGGED_WIRELESS -> "WIRELESS"
-            8 -> "DOCK"
-            null, -1 -> "UNKNOWN"
-            else -> if (plugCode == 0) "NONE" else if (plugCode > 0) "OTHER_" + plugCode else "UNKNOWN"
-        }
+        val plug = plugName(intent)
+        val chargerLabel = chargerLabels.snapshot(plug,elapsed)
         val healthCode = intent?.getIntExtra(BatteryManager.EXTRA_HEALTH, -1) ?: -1
         if (status != lastSampleState) {
             event("BATTERY_STATE_CHANGED", "from=" + (lastSampleState ?: "UNKNOWN") + " to=" + status)
@@ -415,6 +431,7 @@ class BatteryRecorderService : Service() {
             metadata.put("@battery_raw_v1",broadcastMetadata)
             metadata.put("@battery_broadcast_read_elapsed_ms",broadcastReadElapsed)
             metadata.put("@battery_property_status",JSONObject(lastBatteryPropertyStatus.mapKeys { it.key.toString() }))
+            chargerLabel?.let { metadata.put(ChargerLabelJson.KEY,ChargerLabelJson.encode(it)) }
             metadata.put("@recorder/sample_collection_finished_elapsed_ms",SystemClock.elapsedRealtime())
             put("power_supply_json",metadata.toString())
             if (usb != null) {
@@ -530,6 +547,7 @@ class BatteryRecorderService : Service() {
 
     override fun onDestroy() {
         recorderRunning = false
+        chargerLabels.boundary()
         if (activeRecorder === this) activeRecorder = null
         notificationHandler.removeCallbacksAndMessages(null)
         handler.removeCallbacks(sampler)
@@ -575,6 +593,15 @@ class BatteryRecorderService : Service() {
 
         @Volatile private var activeRecorder: BatteryRecorderService? = null
         fun isRecorderLive(): Boolean = activeRecorder?.recorderRunning == true
+        internal fun currentChargerLabel(): ChargerLabel? =
+            activeRecorder?.takeIf { it.recorderRunning }?.chargerLabels?.current()
+        internal fun labelCurrentConnection(raw: String): Boolean {
+            val recorder = activeRecorder?.takeIf { it.recorderRunning } ?: return false
+            val prefs = recorder.getSharedPreferences(PREFS,MODE_PRIVATE)
+            if (RecordingPreference.isPaused(prefs)) return false
+            return recorder.chargerLabels.assign(raw,SystemClock.elapsedRealtime()) != null
+        }
+        internal fun clearChargerLabel() { activeRecorder?.chargerLabels?.clear() }
         fun liveHealthReport(): String {
             val recorder = activeRecorder ?: return "NOT_RUNNING_IN_THIS_PROCESS"
             if (!recorder.recorderRunning) return "NOT_RUNNING_IN_THIS_PROCESS"

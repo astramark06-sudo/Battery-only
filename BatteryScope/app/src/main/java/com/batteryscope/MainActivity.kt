@@ -18,6 +18,8 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.Button
+import android.widget.EditText
+import android.text.InputFilter
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -48,6 +50,7 @@ class MainActivity : Activity() {
     private var pendingImportRequest = 0
     private lateinit var samplingModeButton: Button
     private lateinit var recordingToggle: Button
+    private lateinit var chargerLabelButton: Button
 
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private lateinit var telemetryThread: HandlerThread
@@ -188,6 +191,12 @@ class MainActivity : Activity() {
         content.addView(curvePanel, LinearLayout.LayoutParams(-1, -2))
         batteryText = addPanel(content, "Battery readings")
         chargerText = addPanel(content, "Charger / phone communication")
+        chargerLabelButton = Button(this).apply {
+            maxLines = 2
+            text = "Label current charger"
+            setOnClickListener { showChargerLabelDialog() }
+        }
+        content.addView(chargerLabelButton)
         diagnosticText = addPanel(content, "Measurement quality & sources")
         addReportButton(content, "Detailed charging history") { db -> db.historySummary(chargingFocus=true) }
         addReportButton(content, "Battery health & capacity") { db -> db.capacityEstimateReport() }
@@ -673,6 +682,7 @@ class MainActivity : Activity() {
             if (!isFinishing && !isDestroyed) {
                 dashboardScroll.refreshContent {
                     liveSummary.setTextIfChanged(compactReport)
+                    updateChargerLabelButton()
                     val health = BatteryRecorderService.liveHealthReport()
                     monitorText.setTextIfChanged(statusReport + "\nRecorder: " + health)
                     recorderSummary.setTextIfChanged("Recorder: " + when {
@@ -703,6 +713,47 @@ class MainActivity : Activity() {
             telemetryReadInFlight.set(false)
         }
         }
+    }
+
+    private fun updateChargerLabelButton() {
+        if (::chargerLabelButton.isInitialized) {
+            val label = BatteryRecorderService.currentChargerLabel()
+            chargerLabelButton.setTextIfChanged(if (label == null) "Label current charger" else "Charger label: " + label.name)
+        }
+    }
+
+    private fun showChargerLabelDialog() {
+        val active = BatteryRecorderService.currentChargerLabel()
+        val field = EditText(this).apply {
+            hint = "e.g. Charger A"
+            setSingleLine(true)
+            filters = arrayOf(InputFilter.LengthFilter(40))
+            setText(active?.name.orEmpty())
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Manual charger label")
+            .setMessage("Use a short non-personal nickname. This labels future samples of the current observed connection only, while recording. It is not automatic charger identification. The label clears on observed connection changes or recorder restart and is included in exported history. No charging settings are changed.")
+            .setView(field)
+            .setNegativeButton("Cancel",null)
+            .setNeutralButton("Clear current label") { _,_ ->
+                BatteryRecorderService.clearChargerLabel()
+                updateChargerLabelButton()
+            }
+            .setPositiveButton("Apply",null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = ChargerLabel.normalizedName(field.text.toString())
+                if (name == null) {
+                    field.error = "Use 1–40 letters, digits, spaces or -_.()"
+                } else if (!BatteryRecorderService.labelCurrentConnection(name)) {
+                    field.error = "Active recorder and an observed connected source required."
+                } else {
+                    updateChargerLabelButton()
+                    dialog.dismiss()
+                }
+            }
+        }
+        dialog.show()
     }
 
     private fun recordingPaused(): Boolean = RecordingPreference.isPaused(

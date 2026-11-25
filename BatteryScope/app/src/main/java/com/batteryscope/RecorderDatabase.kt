@@ -241,10 +241,11 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
     }
 
     /** Same observation policy for the lightweight overview and the complete report. */
-    private fun readChargingProfile(now: Long, minId: Long, maxId: Long): ChargingProfile {
+    private fun readChargingProfile(now: Long, minId: Long, maxId: Long, includeLabels: Boolean = false): ChargingProfile {
         val profile = ChargingProfile()
         readableDatabase.rawQuery(
-            "SELECT elapsed_realtime_ms,boot_count,battery_percent,battery_status,plug_type,battery_voltage_mv,battery_current_ua,temperature_c,charge_counter_uah,usb_voltage_candidate_uv,usb_current_candidate_ua,timestamp_ms,max_charging_current_ua,max_charging_voltage_uv FROM samples INDEXED BY idx_samples_time WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id",
+            "SELECT elapsed_realtime_ms,boot_count,battery_percent,battery_status,plug_type,battery_voltage_mv,battery_current_ua,temperature_c,charge_counter_uah,usb_voltage_candidate_uv,usb_current_candidate_ua,timestamp_ms,max_charging_current_ua,max_charging_voltage_uv" + (if (includeLabels) ",power_supply_json" else "") +
+                " FROM samples INDEXED BY idx_samples_time WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ? ORDER BY id",
             arrayOf((now-30L*86_400_000L).toString(),now.toString(),minId.toString(),maxId.toString())
         ).use { cursor ->
             fun intOrNull(i: Int) = if (cursor.isNull(i)) null else cursor.getLong(i).takeIf { it in Int.MIN_VALUE.toLong()..Int.MAX_VALUE.toLong() }?.toInt()
@@ -252,14 +253,15 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             while (cursor.moveToNext()) profile.accept(ChargingProfile.Sample(
                 cursor.getLong(0),intOrNull(1),intOrNull(2),cursor.getString(3),cursor.getString(4),
                 intOrNull(5),longOrNull(6),if (cursor.isNull(7)) null else cursor.getDouble(7),
-                longOrNull(8),longOrNull(9),longOrNull(10),longOrNull(11),longOrNull(12),longOrNull(13)
+                longOrNull(8),longOrNull(9),longOrNull(10),longOrNull(11),longOrNull(12),longOrNull(13),
+                if (includeLabels) ChargerLabelJson.decode(cursor.getString(14),cursor.getString(4),cursor.getLong(0)) else null
             ))
         }
         return profile
     }
 
     private fun chargingEvidenceReport(now: Long, range: SnapshotRange, capture: ((ChargingProfile) -> Unit)?): String {
-        val profile = readChargingProfile(now,range.minId,range.maxId)
+        val profile = readChargingProfile(now,range.minId,range.maxId,includeLabels=true)
         capture?.invoke(profile)
         return profile.report()
     }

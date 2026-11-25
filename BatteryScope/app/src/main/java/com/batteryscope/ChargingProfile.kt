@@ -7,7 +7,8 @@ internal class ChargingProfile {
     data class Sample(val elapsed: Long, val boot: Int?, val percent: Int?, val state: String,
         val plug: String, val voltageMv: Int?, val currentUa: Long?, val temperatureC: Double?,
         val counterUah: Long?, val usbVoltage: Long?, val usbCurrent: Long?, val wallMs: Long? = null,
-        val advertisedCurrentUa: Long? = null, val advertisedVoltageUv: Long? = null)
+        val advertisedCurrentUa: Long? = null, val advertisedVoltageUv: Long? = null,
+        val chargerLabel: ChargerLabel? = null)
     class Range {
         var count = 0L
             private set
@@ -106,6 +107,20 @@ internal class ChargingProfile {
     private var lastEvidence: List<String>? = null
     private var evidenceCount = 0L
     private val sourceBands = linkedMapOf<String,Band>()
+    private val labeledBands = linkedMapOf<Pair<String,String>,List<Band>>()
+    private var omittedLabeledIntervals = 0L
+    private fun observeLabeledInterval(before: Sample, after: Sample, stage: Int, gain: Int) {
+        val label = after.chargerLabel ?: return
+        if (before.chargerLabel != label ||
+            !label.validAt(before.plug,before.elapsed) || !label.validAt(after.plug,after.elapsed)) return
+        val key = label.name to label.source
+        // Bound report memory even with many imported labels.
+        if (key !in labeledBands && labeledBands.size >= 16) {
+            omittedLabeledIntervals++
+            return
+        }
+        labeledBands.getOrPut(key) { List(3) { Band() } }[stage].add(after.elapsed-before.elapsed,gain)
+    }
     private fun observeEvidence(s: Sample) {
         val values = listOf(s.plug,s.state,
             advertisedValue(s.advertisedCurrentUa)?.toLong()?.toString() ?: "unavailable",
@@ -144,6 +159,7 @@ internal class ChargingProfile {
                 val index = phaseBounds.indexOfFirst { (a,b) -> low >= a && low < b }
                 if (index >= 0 && high <= phaseBounds[index].second) {
                     phaseBands[index].add(after.elapsed-prior.elapsed,high-low)
+                    observeLabeledInterval(prior,after,index,high-low)
                 } else omittedPhaseIntervals++
             }
         } else if (!adjacent && before != null && before.state == "CHARGING" &&
@@ -364,6 +380,19 @@ internal class ChargingProfile {
             appendLine(String.format(Locale.US,"%s: %.2f pp/h • +%d points • %.2f observed min",source,band.rate(),band.gained,band.ms/60_000.0))
         }
         appendLine("Android source category is not a physical charger identity. Different adapters of the same type can be combined; rates depend on SOC, temperature and phone load.")
+        appendLine("=== USER-LABELLED CHARGING COMPARISON (LAST 30 DAYS) ===")
+        appendLine("Labels are manual assertions, not verified adapter identity. Only eligible same-assignment endpoint pairs wholly within a stage contribute; no retroactive attribution. Different assignments of the same exact label and source are aggregated, not joined. Imported labels are not authenticated; SOC, temperature and phone load may differ.")
+        if (labeledBands.isEmpty()) appendLine("No eligible manually labelled intervals.")
+        labeledBands.forEach { (key,stageBands) ->
+            appendLine("  ${key.first} • Android source ${key.second}")
+            stageBands.forEachIndexed { i,band ->
+                val (a,b) = phaseBounds[i]
+                appendLine("    $a–$b%: " + (band.rate()?.let {
+                    String.format(Locale.US,"%.2f pp/h • +%d points • %.2f observed min",it,band.gained,band.ms/60_000.0)
+                } ?: "insufficient observations"))
+            }
+        }
+        appendLine("At most 16 label/source groups in recording order; additional labelled intervals omitted: $omittedLabeledIntervals.")
         appendLine("=== CHARGER / PHONE REPORTED STATE CHANGES (LAST 30 DAYS) ===")
         appendLine("Showing latest ${evidenceChanges.size}/$evidenceCount observed state/advertised-limit changes in recording order, including initial observation. Missing values do not establish a protocol change. Sampled evidence only, not negotiation packets or active contracts.")
         evidenceChanges.forEach { appendLine(it) }

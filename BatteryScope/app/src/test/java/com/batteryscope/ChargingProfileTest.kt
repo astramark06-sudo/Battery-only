@@ -281,6 +281,25 @@ class ChargingProfileTest {
         assertTrue(r.report().contains("CHARGER / PHONE REPORTED STATE CHANGES"))
     }
 
+    @Test fun chargerLabelsCompareOnlyWithinSameAssignmentAndStage() {
+        val a = ChargerLabel("Adapter A","AC","11111111-1111-1111-1111-111111111111",0)
+        val b = a.copy(assignment="22222222-2222-2222-2222-222222222222",assignedElapsed=60_000)
+        val c = ChargerLabel("Adapter B","AC","33333333-3333-3333-3333-333333333333",120_000)
+        val r = ChargingProfile()
+        r.accept(sample(0,20).copy(chargerLabel=a))
+        r.accept(sample(30_000,21).copy(chargerLabel=a))
+        r.accept(sample(60_000,22).copy(chargerLabel=b)) // not counted across assignments
+        r.accept(sample(90_000,23).copy(chargerLabel=b))
+        r.accept(sample(120_000,24).copy(chargerLabel=c))
+        r.accept(sample(150_000,26).copy(chargerLabel=c))
+        r.accept(sample(180_000,27)) // not retrospectively labelled
+        val text = r.report().substringAfter("=== USER-LABELLED CHARGING COMPARISON").substringBefore("=== CHARGER / PHONE")
+        val groupA = text.substringAfter("Adapter A • Android source AC").substringBefore("Adapter B")
+        val groupB = text.substringAfter("Adapter B • Android source AC")
+        assertTrue(groupA.contains("20–80%: 120.00 pp/h • +2 points • 1.00 observed min"))
+        assertTrue(groupB.contains("20–80%: 240.00 pp/h • +2 points • 0.50 observed min"))
+    }
+
     @Test fun rejectsGapsBootChangesReversalsAndCrossBandJumps() {
         val r = ChargingProfile()
         r.accept(sample(1000,15))

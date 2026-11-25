@@ -128,6 +128,27 @@ class RecorderDatabaseAndroidTest {
         assertArrayEquals(before,backup(db))
     }
 
+    @Test fun labelMetadataIsReadOnlyAndPreservedInPortableBackup() = database { db ->
+        val label = ChargerLabel("Adapter A","AC","11111111-1111-1111-1111-111111111111",100)
+        val raw = org.json.JSONObject().put(ChargerLabelJson.KEY,ChargerLabelJson.encode(label)).toString()
+        sample(db,1000,100,20,true)
+        sample(db,31000,30100,21,true)
+        db.writableDatabase.execSQL("UPDATE samples SET power_supply_json=?",arrayOf(raw))
+        assertEquals(label,ChargerLabelJson.decode(raw,"AC",100))
+        assertNull(ChargerLabelJson.decode(raw,"USB",100))
+        assertNull(ChargerLabelJson.decode(raw,"AC",99))
+        assertNull(ChargerLabelJson.decode("{invalid","AC",100))
+        val before = backup(db)
+        val full = db.historySummary(31000,chargingFocus=true)
+        assertTrue(full.contains("Adapter A • Android source AC"))
+        assertArrayEquals(before,backup(db))
+        database { target ->
+            target.restoreBackup(java.io.ByteArrayInputStream(before))
+            assertTrue(target.historySummary(31000,chargingFocus=true).contains("Adapter A • Android source AC"))
+            assertArrayEquals(before,backup(target))
+        }
+    }
+
     @Test fun exactOverlapRecoveryPreservesDuplicatesAndRejectsConflictsAtomically() = database { source ->
         sample(source,1000,100,70)
         sample(source,2000,200,69)
