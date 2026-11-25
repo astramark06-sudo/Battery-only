@@ -350,6 +350,7 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                     " • local OS events only; retention and completeness not guaranteed")
             } else {
                 appendLine("Charging-focused reporting: no new app or device-resource collection. Earlier raw history retained.")
+                appendLine("History may include restored records; legacy and portable backups do not authenticate the originating handset. Comparisons assume same-device history.")
                 appendLine("Actual amperage/wattage is not inferred from SOC or the charge counter. Observed percentage-point rates are not electrical measurements.")
             }
             appendLine("Report excludes samples dated after its reference time; original records remain stored.")

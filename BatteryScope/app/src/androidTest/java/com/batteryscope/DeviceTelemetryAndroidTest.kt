@@ -7,6 +7,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DeviceTelemetryAndroidTest {
+    @Test fun packagedPermissionsAndBackupFlagMatchLocalOnlyPolicy() {
+        val app = InstrumentationRegistry.getInstrumentation().targetContext
+        @Suppress("DEPRECATION")
+        val info = app.packageManager.getPackageInfo(app.packageName,PackageManager.GET_PERMISSIONS)
+        assertEquals(setOf(
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
+            "android.permission.POST_NOTIFICATIONS",
+            "android.permission.WAKE_LOCK",
+            "android.permission.RECEIVE_BOOT_COMPLETED"
+        ),info.requestedPermissions.orEmpty().toSet())
+        val flags = checkNotNull(info.applicationInfo).flags
+        assertEquals(0,flags and android.content.pm.ApplicationInfo.FLAG_ALLOW_BACKUP)
+    }
+
     @Test fun chargingInventoryExcludesUnrelatedSourcesAndPermissions() {
         val app = InstrumentationRegistry.getInstrumentation().targetContext
         val fields = HardwareSnapshotCache.snapshot(app,0L)

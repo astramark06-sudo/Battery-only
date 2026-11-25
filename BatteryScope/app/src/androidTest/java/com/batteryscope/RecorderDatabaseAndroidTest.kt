@@ -149,6 +149,37 @@ class RecorderDatabaseAndroidTest {
         }
     }
 
+    @Test fun largeOlderHistoryDoesNotChangeRecentOverview() = database { db ->
+        val now = 2_000_000_000_000L
+        val day = 86_400_000L
+        repeat(300) { i -> sample(db,now-9_000_000+i*30_000L,i*30_000L,20+i/5,true) }
+        val startSmall = android.os.SystemClock.elapsedRealtimeNanos()
+        val small = db.chargingOverview(now)
+        val smallNs = android.os.SystemClock.elapsedRealtimeNanos()-startSmall
+        val writable = db.writableDatabase
+        // Disposable synthetic rows, not user history. Insert as earlier IDs just as restore does.
+        writable.beginTransaction()
+        try {
+            writable.compileStatement("INSERT INTO samples(id,timestamp_ms,elapsed_realtime_ms,boot_count,battery_percent,battery_status,plug_type,screen_on,usage_access) VALUES(?,?,?,9,40,'CHARGING','AC',0,0)").use { stmt ->
+                repeat(50_000) { i ->
+                    stmt.bindLong(1,-50_000L+i)
+                    stmt.bindLong(2,now-60*day+i*30_000L)
+                    stmt.bindLong(3,i*30_000L)
+                    stmt.executeInsert()
+                }
+            }
+            writable.setTransactionSuccessful()
+        } finally { writable.endTransaction() }
+        val startLarge = android.os.SystemClock.elapsedRealtimeNanos()
+        val large = db.chargingOverview(now)
+        val largeNs = android.os.SystemClock.elapsedRealtimeNanos()-startLarge
+        assertEquals(small.stages,large.stages)
+        assertEquals(small.curves.map { it.points() },large.curves.map { it.points() })
+        assertEquals(50_300L,number(db.readableDatabase,"SELECT COUNT(*) FROM samples"))
+        // Report timings, no brittle device-independent timing threshold.
+        android.util.Log.i("BatteryScopeBenchmark","Overview synthetic 300 rows ns=$smallNs; 50300 rows (300 recent) ns=$largeNs")
+    }
+
     @Test fun exactOverlapRecoveryPreservesDuplicatesAndRejectsConflictsAtomically() = database { source ->
         sample(source,1000,100,70)
         sample(source,2000,200,69)

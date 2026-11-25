@@ -240,7 +240,7 @@ class MainActivity : Activity() {
             setOnClickListener {
                 AlertDialog.Builder(this@MainActivity)
                     .setTitle("Prepare CSV history")
-                    .setMessage("CSV may contain recorded app names and battery history. It is not encrypted. Samples and events are grouped in their original recorded sequence, not sorted by wall time. Use a portable backup for exact typed history. Prepare a private copy, then choose where to save it.")
+                    .setMessage("CSV may contain battery history, manual charger labels and older recorded app names. It is not encrypted. Import columns as text in spreadsheet software rather than evaluating cell formulas. Use a portable backup for exact typed history. Prepare a private copy, then choose where to save it.")
                     .setNegativeButton("Cancel", null)
                     .setPositiveButton("Prepare") { _, _ -> exportRecorderHistory() }.show()
             }
@@ -251,7 +251,7 @@ class MainActivity : Activity() {
             setOnClickListener {
                 AlertDialog.Builder(this@MainActivity)
                     .setTitle("Save history backup")
-                    .setMessage("The backup contains raw battery records and any recorded app names. Keep it private and save it outside BatteryScope app storage. It is not encrypted.")
+                    .setMessage("The backup contains raw battery records, manual charger labels and any older recorded app names. Keep it private and choose a trusted storage location. It is not encrypted. Its checksum detects corruption but does not authenticate its source.")
                     .setNegativeButton("Cancel", null)
                     .setPositiveButton("Save") { _, _ -> exportRecorderHistory(true) }.show()
             }
@@ -960,7 +960,11 @@ class MainActivity : Activity() {
                         .setMessage("An older app wrote this file directly, so it may be incomplete. Copy verification cannot establish its original record count. Prefer preparing a new export from local history. The older private copy will be retained.")
                         .setNegativeButton("Cancel", null)
                         .setPositiveButton("Copy anyway") { _, _ -> launchHistoryExport(name) }.show()
-                } else launchHistoryExport(name)
+                } else AlertDialog.Builder(this)
+                    .setTitle("Save unencrypted history?")
+                    .setMessage("This file can contain timestamps, battery data, manual charger labels and older app names. Choose a private destination. BatteryScope cannot control access after export.")
+                    .setNegativeButton("Cancel",null)
+                    .setPositiveButton("Choose destination") { _,_ -> launchHistoryExport(name) }.show()
             }
             .setNegativeButton("Cancel", null).show()
     }
@@ -1024,7 +1028,7 @@ class MainActivity : Activity() {
         if (historyBusy()) return
         AlertDialog.Builder(this)
             .setTitle(if (legacy) "Import original CSV" else if (exactOverlap) "Recover earlier history with exact overlap" else "Restore earlier history")
-            .setMessage(if (legacy) "Select the original, unedited 28-column BatteryScope CSV from this handset. CSV is not checksummed or lossless; missing fields and flattened text cannot be recovered. Existing history will not be overwritten and overlap is rejected." else if (exactOverlap) "Use only a portable backup from this same handset. Its source identity is not authenticated. Only earlier records can be inserted; overlapping records must match the existing sequence and every typed value exactly. Any conflict rolls back the entire operation. Later or interleaved records cannot be merged." else "Use only a BatteryScope .bsh backup from this handset. The format cannot prove its original device. Existing history will not be overwritten. Overlapping timestamps are rejected. Large backups may take time and temporary storage.")
+            .setMessage(if (legacy) "Select the original, unedited 28-column BatteryScope CSV from this handset. CSV is not checksummed or lossless; missing fields and flattened text cannot be recovered. Existing history will not be overwritten and overlap is rejected." else if (exactOverlap) "Use only a portable backup from this same handset. Its source identity is not authenticated. Only earlier records can be inserted; overlapping records must match the existing sequence and every typed value exactly. Any conflict rolls back the entire operation. Later or interleaved records cannot be merged." else "Use only a BatteryScope .bsh backup from this handset. The format cannot prove its original device. Existing history will not be overwritten. Overlapping timestamps are rejected. Large backups may take time and temporary storage; recording can temporarily contend with the restore transaction. Do not import history from another handset.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Choose backup") { _, _ ->
                 if (!historyBusy()) {
