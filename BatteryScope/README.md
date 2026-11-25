@@ -1,5 +1,9 @@
 # BatteryScope 1.15 — Realme Narzo 20 Pro (RMX2161)
 
+## Follow-up — shared release permission policy (CI verification pending)
+
+Close the remaining offline-preflight permission-policy gap: previously release mode rejected INTERNET alone, whereas Android CI expected exactly five permissions. Both now call the same fail-closed badging parser; release mode also retains exact versionName, non-debug, certificate and version continuity checks. Reject unexpected/missing/duplicate/conditional/implied/malformed declarations. No Android source, permission, data schema, format, version, signing identity or release change. Two added policy test methods; cumulative verification required for this follow-up. The prior batch 10 evidence remains tied to its exact tested source, not this new commit. No trusted installed signing identity or physical acceptance evidence established. Do not uninstall, merge or release.
+
 ## Current verified acceptance — 2026-11-25
 
 **Source `b1811ba9482f741b884a4a706324a7d8ecdede95` passed cumulative CI.** See [CURRENT_ACCEPTANCE.md](CURRENT_ACCEPTANCE.md) for the authoritative current evidence, all 40 historical audit dispositions and remaining gates. 104 JVM + 37 Android + 17 signing/advisory tests passed; zero known OSV matches across 123 resolved Maven coordinates. The current debug APK is not an authorized update or release. The agreed charging-first repository implementation and its automated acceptance checks are complete; physical measurement, recording overhead/continuity, trusted signing identity and data-preserving update remain unverified. Earlier entries below are historical, not current instructions to promote already-verified batches. Do not restart development or repeat unchanged checks unless new evidence identifies a scoped defect.

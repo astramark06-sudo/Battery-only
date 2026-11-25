@@ -80,25 +80,11 @@ jobs:
           grep -q "versionName='1.15'" apk-badging.txt
           grep -Fxq "application-debuggable" apk-badging.txt
           python3 - <<'PY'
-          import re
+          import sys
           from pathlib import Path
-          expected = {
-              "android.permission.FOREGROUND_SERVICE",
-              "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
-              "android.permission.POST_NOTIFICATIONS",
-              "android.permission.WAKE_LOCK",
-              "android.permission.RECEIVE_BOOT_COMPLETED",
-          }
-          lines = Path("apk-badging.txt").read_text().splitlines()
-          actual = set()
-          for line in lines:
-              if line.startswith("uses-permission"):
-                  match = re.search(r"name='([^']+)'", line)
-                  if not match:
-                      raise SystemExit("Unrecognized permission output: " + line)
-                  actual.add(match.group(1))
-          if actual != expected:
-              raise SystemExit(f"Packaged permissions changed: unexpected={actual-expected}, missing={expected-actual}")
+          sys.path.insert(0, "tools")
+          from verify_apk_update import check_permission_badging
+          check_permission_badging(Path("apk-badging.txt").read_text(encoding="utf-8"))
           print("Packaged permission allowlist verified")
           PY
           echo "Development debug artifact only; not a production update"

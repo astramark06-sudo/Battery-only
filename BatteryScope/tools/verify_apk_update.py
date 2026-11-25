@@ -15,6 +15,13 @@ from dataclasses import dataclass, asdict
 
 PACKAGE = "com.batteryscope"
 BUILD_TOOLS = "35.0.0"
+EXPECTED_PERMISSIONS = frozenset({
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
+    "android.permission.POST_NOTIFICATIONS",
+    "android.permission.WAKE_LOCK",
+    "android.permission.RECEIVE_BOOT_COMPLETED",
+})
 
 
 class VerificationError(Exception):
@@ -46,8 +53,35 @@ def parse_badging(output: str) -> tuple[str, int]:
     return package, int(version)
 
 
+def check_permission_badging(output: str) -> None:
+    """Require exactly the current five unconditional app permissions.
+
+    Reject missing, duplicate, unexpected, implied, SDK-conditional or
+    unrecognized permission declarations rather than silently ignoring them.
+    This checks aapt's reported badging, not a complete manifest security audit.
+    """
+    actual = set()
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line.startswith(("uses-permission", "uses-implied-permission")):
+            continue
+        match = re.fullmatch(r"uses-permission: name='([^']+)'", line)
+        if not match:
+            raise VerificationError("Unexpected or conditional permission declaration: " + line)
+        permission = match.group(1)
+        if permission in actual:
+            raise VerificationError("Duplicate permission declaration: " + permission)
+        actual.add(permission)
+    if actual != EXPECTED_PERMISSIONS:
+        raise VerificationError(
+            "Packaged permission policy mismatch: unexpected="
+            + repr(sorted(actual - EXPECTED_PERMISSIONS))
+            + ", missing=" + repr(sorted(EXPECTED_PERMISSIONS - actual))
+        )
+
+
 def check_release_badging(output: str, expected_version_name: str) -> None:
-    """Fail closed on missing release metadata, debug markers or network access."""
+    """Fail closed on missing release metadata, debug markers or permission mismatch."""
     parse_badging(output)
     lines = output.splitlines()
     package_line = next(line for line in lines if line.startswith("package: name="))
@@ -58,8 +92,7 @@ def check_release_badging(output: str, expected_version_name: str) -> None:
         raise VerificationError("Missing application metadata in release badging")
     if any(line.strip().startswith("application-debuggable") for line in lines):
         raise VerificationError("Debuggable APK cannot pass the release gate")
-    if re.search(r"^uses-permission[^:]*:.*['\"]android\.permission\.INTERNET['\"]", output, re.M):
-        raise VerificationError("Unexpected INTERNET permission in local-only release")
+    check_permission_badging(output)
 
 
 def parse_signer(output: str) -> str:
@@ -151,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     trust.add_argument("--expected-cert", help="Trusted installed certificate SHA-256, not the APK checksum")
     parser.add_argument("--installed-version-code", type=int)
     parser.add_argument("--allow-same-version", action="store_true", help="Developer verification only, not release approval")
-    parser.add_argument("--release-version-name", help="Also require exact versionName, non-debug APK and no INTERNET permission")
+    parser.add_argument("--release-version-name", help="Also require exact versionName, non-debug APK and the exact five-permission allowlist")
     parser.add_argument("--apksigner")
     parser.add_argument("--aapt")
     args = parser.parse_args(argv)
@@ -177,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         report["release_metadata_checked"] = args.release_version_name is not None
         if args.release_version_name is not None:
             report["expected_version_name"] = args.release_version_name
+            report["expected_permissions"] = sorted(EXPECTED_PERMISSIONS)
         report["expected_cert"] = cert
         report["installed_version_code"] = code
         report["notice"] = "No actual installation, Android migration, device validation or release approval performed."

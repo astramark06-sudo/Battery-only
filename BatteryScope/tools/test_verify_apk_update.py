@@ -14,6 +14,16 @@ CHECKSUM = "c" * 64
 IDENTITY = gate.ApkIdentity(gate.PACKAGE, 17, CERT, CHECKSUM)
 BADGING = "package: name='com.batteryscope' versionCode='17' versionName='1.16'\n"
 SIGNER = f"Number of signers: 1\nSigner #1 certificate SHA-256 digest: {CERT}\n"
+# Intentionally independent of the implementation allowlist to catch policy drift.
+PERMISSIONS = (
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
+    "android.permission.POST_NOTIFICATIONS",
+    "android.permission.WAKE_LOCK",
+    "android.permission.RECEIVE_BOOT_COMPLETED",
+)
+PERMISSION_BADGING = "".join(f"uses-permission: name='{p}'\n" for p in PERMISSIONS)
+RELEASE = BADGING + PERMISSION_BADGING + "application: label='BatteryScope' icon='icon.png'\n"
 
 
 class UpdateGateTest(unittest.TestCase):
@@ -50,7 +60,7 @@ class UpdateGateTest(unittest.TestCase):
                 self.assertEqual("verify",run.call_args_list[0].args[0][1])
 
     def test_release_metadata_rejects_debug_wrong_version_and_internet(self):
-        release = BADGING + "application: label='BatteryScope' icon='icon.png'\n"
+        release = RELEASE
         gate.check_release_badging(release, "1.16")
         for badging, version in [
             (release + "application-debuggable\n", "1.16"),
@@ -64,7 +74,44 @@ class UpdateGateTest(unittest.TestCase):
             with self.subTest(badging=badging, version=version):
                 with self.assertRaises(gate.VerificationError):
                     gate.check_release_badging(badging, version)
-        gate.check_release_badging(release + "uses-permission: name='android.permission.ACCESS_NETWORK_STATE'\n", "1.16")
+    def test_permission_policy_rejects_extra_missing_duplicate_and_conditional(self):
+        gate.check_permission_badging(PERMISSION_BADGING)
+        gate.check_permission_badging("".join(reversed(PERMISSION_BADGING.splitlines(keepends=True))))
+        for permission in PERMISSIONS:
+            line = f"uses-permission: name='{permission}'\n"
+            for invalid in (
+                PERMISSION_BADGING.replace(line, ""),
+                PERMISSION_BADGING + line,
+                PERMISSION_BADGING.replace(line, line.replace("uses-permission:", "uses-permission-sdk-23:")),
+                PERMISSION_BADGING.replace(line, line.rstrip() + " maxSdkVersion='35'\n"),
+            ):
+                with self.subTest(invalid=invalid), self.assertRaises(gate.VerificationError):
+                    gate.check_permission_badging(invalid)
+        for unexpected in ("INTERNET", "ACCESS_NETWORK_STATE", "PACKAGE_USAGE_STATS", "READ_CONTACTS"):
+            with self.subTest(unexpected=unexpected), self.assertRaises(gate.VerificationError):
+                gate.check_release_badging(RELEASE + f"uses-permission: name='android.permission.{unexpected}'\n", "1.16")
+        for suffix in (
+            "uses-permission: malformed\n",
+            "uses-implied-permission: name='android.permission.INTERNET' reason='test'\n",
+            "  uses-permission-sdk-23: name='other.permission.TEST'\n",
+            "uses-permission-unknown: name='other.permission.TEST'\n",
+        ):
+            with self.subTest(suffix=suffix), self.assertRaises(gate.VerificationError):
+                gate.check_permission_badging(PERMISSION_BADGING + suffix)
+        with self.assertRaises(gate.VerificationError):
+            gate.check_permission_badging("")
+
+    def test_release_cli_reports_exact_permission_policy(self):
+        out = io.StringIO()
+        with patch.object(gate,"locate",side_effect=["signer","aapt"]), \
+                patch.object(gate,"inspect_apk",return_value=IDENTITY), contextlib.redirect_stdout(out):
+            result = gate.main(["candidate.apk","--expected-cert",CERT,"--installed-version-code","16",
+                                "--release-version-name","1.16"])
+        self.assertEqual(0,result)
+        report = json.loads(out.getvalue())
+        self.assertEqual("IDENTITY_MATCH_ONLY", report["status"])
+        self.assertEqual(sorted(PERMISSIONS), report["expected_permissions"])
+        self.assertTrue(report["release_metadata_checked"])
 
     def test_release_mode_rejects_same_version_override(self):
         out = io.StringIO()
@@ -79,7 +126,7 @@ class UpdateGateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "candidate.apk"
             path.write_bytes(b"synthetic fixture")
-            release = BADGING + "application: label='BatteryScope' icon='icon.png'\n"
+            release = RELEASE
             with patch.object(gate,"run_tool",side_effect=[SIGNER,release]):
                 self.assertEqual(CERT,gate.inspect_apk(path,"signer","aapt","1.16").signer_sha256)
             with patch.object(gate,"run_tool",side_effect=[SIGNER,release + "application-debuggable\n"]):

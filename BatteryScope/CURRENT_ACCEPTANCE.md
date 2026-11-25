@@ -1,5 +1,9 @@
 # Current verified acceptance — BatteryScope
 
+## Follow-up — shared release permission policy (CI verification pending)
+
+Close the remaining offline-preflight permission-policy gap: previously release mode rejected INTERNET alone, whereas Android CI expected exactly five permissions. Both now call the same fail-closed badging parser; release mode also retains exact versionName, non-debug, certificate and version continuity checks. Reject unexpected/missing/duplicate/conditional/implied/malformed declarations. No Android source, permission, data schema, format, version, signing identity or release change. Two added policy test methods; cumulative verification required for this follow-up. The prior batch 10 evidence remains tied to its exact tested source, not this new commit. No trusted installed signing identity or physical acceptance evidence established. Do not uninstall, merge or release.
+
 Date: 2026-11-25. This is the authoritative current checkpoint for draft PR #3, branch `fix/apk-update-preflight`. All earlier notes and the original 40-item audit retain their historical meaning. Current authorized scope is charging-first, not broad app/resource surveillance. This document records evidence; it does not authorize installation, release, merge, history deletion, hardware modification or new scope.
 
 ## Exact evidence
