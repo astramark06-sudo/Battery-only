@@ -1,5 +1,34 @@
 # Current verified acceptance — BatteryScope
 
+## Current clean-install preparation — 2026-11-26 (IST)
+
+The owner has explicitly accepted replacing the old installation and losing its app-private history if necessary. This supersedes the previous preservation-only installation restriction, but is not permission to erase data remotely, publish a release, or merge PR #3. Preserve any optional exports the owner wants. The previous 6/7 acceptance gate tally is retained without silently changing the denominator; the seventh still requires owner-controlled signing, a physically validated installation, and future update continuity evidence. No new Android source/format/permission/version change.
+
+**Latest verified build source:** `1f1806956cb9783d255f90725a4ab96856f0fd09`; CI checkout `b35e1884ce7b3261a15f4fa36f1348b0192efbb4`.
+
+| Check | Verified result |
+|---|---|
+| Android CI | [45678841911](https://github.com/astramark06-sudo/Battery-only/actions/runs/45678841911), success; 104 JVM + 37 Android tests, XML independently parsed, zero failures/errors/skips |
+| Signing/advisory CI | [45678842131](https://github.com/astramark06-sudo/Battery-only/actions/runs/45678842131), success; job 139433613816 log confirms 19 tests, OK |
+| Unsigned non-debug candidate CI | [45678841875](https://github.com/astramark06-sudo/Battery-only/actions/runs/45678841875), success; build, exact metadata/permissions, archive/zipalign and release lint |
+| Debug artifact | 15053282279; SHA-256 `790668b7faf6f0e5345d8ca7a6269b2fd1609ab9b7496cbd450d0bd5c0fcc5eb` |
+| Android test artifact | 15054210336; SHA-256 `a277f1bec07e4334968f8b4efa177dfacace681c0d5f722bf87cfb4269222665` |
+| Unsigned release artifact | 15052878787; SHA-256 `255a08680f87dbb48e32752e28ddeaa267bba0547b862941430ade7d88aecdbc` |
+| Delivered debug APK | 1,187,845 bytes; SHA-256 `a1005091112acd8a662c755099eeb1cad8f3b4b931372081fbb19fd547afac4b`; previous conversation download independently matched exact artifact bytes |
+| Debug signer | `3b9be0600749033c6cfb5efcbf76c8665717b721b4e5c39bdaf298af81ad5b73`; single RSA v2 debug signer, not stable production identity |
+| Unsigned release APK | 862,182 bytes; SHA-256 `15d7c71e96671c3e1f741e9b28d79de306e932f2734a806b1c3df5366c3946b2`; independently verified hash, archive CRC, no v1 signing entries or v2 signing block, not installable as delivered |
+| App identity and permissions | Both variants com.batteryscope 1.15/code 16, min26, target/compile35, exact five permissions; debug marker only in debug variant |
+| Lint | 67 warnings and zero errors in each variant |
+| OSV | 123 selected debug/test/build Maven coordinates; zero known matches, scan 2026-11-25T18:50:56.856563Z; not a separate release-scope audit |
+
+All three downloaded artifact ZIP hashes matched GitHub metadata and passed CRC; inner APK hashes matched included reports. Independent restricted RSA PKCS#1 v1.5/SHA-256 v2 verification on delivered debug APK matched certificate/public key and four-chunk protected digest, with deliberate protected-byte mutation rejected. A strict parser's initial assumption of no trailing signed-data bytes was corrected after inspecting four signed zero bytes; actual signature and digest verified. This is not a general verifier or proof of trusted installed identity.
+
+An owner-local Windows signing kit was delivered separately in the conversation: `BatteryScope-permanent-signing-kit.zip`, SHA-256 `03d4fbd22f40bb47109d5fda56cec5059afb5858895b924c77bd4a6617d6e86e`. Contains exact unsigned APK, Python helper, double-click batch launcher, instructions. Eight local tests passed (actual unsigned metadata, permission/debug/version rejection, signer policy, mocked end-to-end signing, tamper/mismatch/cancel/existing-output rejection). The real Android SDK signing operation was not run here; the helper requires trusted SDK Build Tools 36.0.0 and JDK/Python on the owner's PC. It prompts for new identity creation, uses official tool password prompts, verifies exported public certificate and signed APK metadata, and never installs or sends secrets. Neither kit nor private user CSV/keys are committed to Git.
+
+**Next user action:** Either install the already-delivered debug APK for diagnostic testing only (a clean install may discard old history), or preferably run the local signing kit to establish a permanent owner-controlled non-debug baseline before installing. Back up the private signing key securely; send only the public verification JSON if requesting help. After installation use the app normally and provide fresh export and observations on charging, unplugging, screen-off and reboot; no forced discharge. Physical measurement/continuity/overhead, owner signing and future update preservation are not established. Draft PR remains unmerged, no production release or remote data deletion.
+
+Earlier evidence below is historical. No unchanged application tests need repeating solely for this documentation checkpoint.
+
 ## Follow-up — shared release permission policy (verified)
 
 The shared five-permission policy is verified on source `76009d5b8169a63a955b800e28c586efe6af9be0`: Android CI [45669685429](https://github.com/astramark06-sudo/Battery-only/actions/runs/45669685429) and signing/advisory CI [45669685225](https://github.com/astramark06-sudo/Battery-only/actions/runs/45669685225) succeeded. 104 JVM + 37 Android + 19 Python tests = 160 passing tests. Independent archive SHA-256/CRC and XML checks, exact-blob permission parser against actual aapt metadata, RSA v2 signature/protected-content verification and tamper rejection passed. OSV reports zero known matches in 123 resolved Maven coordinates; lint has 67 warnings and zero errors. The application payload is byte-identical to batch 10 (23 ZIP entries and all three protected sections with central-directory offset normalized), but the ephemeral debug certificate differs. Exact current evidence is in [CURRENT_ACCEPTANCE.md](CURRENT_ACCEPTANCE.md). No Android source, permission, data schema, format, version, signing configuration or release change. No trusted installed identity or physical acceptance evidence established. Previous batch records below are historical. Six of seven existing acceptance gates remain verified; do not uninstall, merge or release.
