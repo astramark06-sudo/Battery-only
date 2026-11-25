@@ -1,5 +1,11 @@
 # BatteryScope changelog
 
+## 2026-11-25 — Chart UI regression and duration artifact checkpoint
+
+- Added real Android main-thread chart-view regression covering empty data, actual SOC and temperature Canvas pixels, earlier-segment selection, missing temperature, retention across refresh, single-point plots and clearing stale visible values. It does not start the recorder, touch production history or claim handset visual validation. Requires new instrumentation CI.
+- Current applied head 2f5bd75aba37f17e9a1bb11d49a38e2158501c87: signing run 45535878438 passed; Android 45535878462 still running at preparation. Downloaded duration artifact 14986858203: archive SHA-256 0c8c4eb457ca76a4841bc4e3731cef2f507bf3a41821a14ad7c0e73dc9a6caeb matched metadata, ZIP CRC valid, APK 1,025,030 bytes SHA-256 c5b35639d3a7a4e9a96b0313f2f36f3011ceea659c791915716a1d0212d9ec10 matched included report, 91 JVM tests (22 XML suites), zero failures/errors/skips. CI reports debug signer e7fe031d2122da887f36c8d8dfcd69624499c9efe9e9a4e35c86a90dafc9625c and v2 verification; local apksigner unavailable. Not a safe update.
+- Prepared candidate includes advertised-limit commit 7e0a3bc1 and this UI test. Exact next action: check current branch and Android run 45535878462; after successful completion fast-forward to this candidate, verify cumulative Android/signing CI and exact artifacts. If a test fails, fix its actual failure before promotion. Remaining gates: handset chart/measurement validation, independently trusted installed signer, actual charger input availability; no guessed calibration. No history, identity, schema, permissions or signing changes.
+
 ## 2026-11-25 — Optional advertised limits in charging history
 
 - Report raw positive int-domain optional max-charging-current/voltage fields from existing stored samples, with independent missing/rejected counts and paired coverage. No multiplication into watts; no active USB contract, measured input, calibrated limit or protocol inference. No new telemetry source, hidden API access, schema or export changes.
