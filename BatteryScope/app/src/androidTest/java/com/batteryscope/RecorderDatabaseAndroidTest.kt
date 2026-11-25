@@ -105,6 +105,29 @@ class RecorderDatabaseAndroidTest {
         assertTrue(overview.stages.all { it.rate == null && it.observedMs == 0L && it.exactText == null })
     }
 
+    @Test fun connectionTimelineUsesBoundedRecordedEventsWithoutMutatingHistory() = database { db ->
+        val now = 2_000_000_000_000L
+        val day = 86_400_000L
+        db.insertEvent(now-31*day,"POWER_CONNECTED","outside window")
+        repeat(30) { i -> db.insertEvent(now-60_000+i,"POWER_CONNECTED","connection-$i") }
+        db.insertEvent(now-10_000,"POWER_DISCONNECTED","last disconnect")
+        db.insertEvent(now-5_000,"SCREEN_ON","unrelated event")
+        db.insertEvent(now+1,"POWER_CONNECTED","future event")
+        val before = backup(db)
+        val report = db.historySummary(now,chargingFocus=true)
+        val section = report.substringAfter("=== RECORDED CONNECTION EVENTS (LAST 30 DAYS) ===")
+            .substringBefore("=== MOST RECENT CHARGING SESSION")
+        assertEquals(24,section.lines().count { it.contains(" • POWER_") })
+        assertTrue(section.contains("connection-7"))
+        assertFalse(section.contains("connection-6"))
+        assertTrue(section.contains("last disconnect"))
+        assertFalse(section.contains("outside window"))
+        assertFalse(section.contains("unrelated event"))
+        assertFalse(section.contains("future event"))
+        assertTrue(section.indexOf("connection-7") < section.indexOf("last disconnect"))
+        assertArrayEquals(before,backup(db))
+    }
+
     @Test fun exactOverlapRecoveryPreservesDuplicatesAndRejectsConflictsAtomically() = database { source ->
         sample(source,1000,100,70)
         sample(source,2000,200,69)

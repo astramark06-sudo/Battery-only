@@ -46,6 +46,46 @@ class DashboardScrollAndroidTest {
         checkNotNull(outcome).getOrThrow()
     }
 
+    @Test fun restoredOffsetWaitsForOverviewAndThenClampsToContent() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        var outcome: Result<Unit>? = null
+        instrumentation.runOnMainSync {
+            outcome = runCatching {
+                val context = instrumentation.targetContext
+                val scroll = DashboardScrollView(context)
+                val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+                val spacer = View(context)
+                content.addView(spacer,LinearLayout.LayoutParams(-1,650))
+                scroll.addView(content)
+                fun layout() {
+                    scroll.measure(View.MeasureSpec.makeMeasureSpec(500,View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(600,View.MeasureSpec.EXACTLY))
+                    scroll.layout(0,0,500,600)
+                }
+                scroll.rememberRestoredOffset(800)
+                layout()
+                assertEquals(800,scroll.offsetForSave())
+                assertEquals(0,scroll.scrollY)
+                spacer.layoutParams = LinearLayout.LayoutParams(-1,2400)
+                scroll.restoreWhenOverviewReady()
+                layout()
+                assertEquals(800,scroll.scrollY)
+                scroll.rememberRestoredOffset(9999)
+                scroll.restoreWhenOverviewReady()
+                layout()
+                assertEquals(1800,scroll.scrollY)
+                scroll.rememberRestoredOffset(1000)
+                val down = android.view.MotionEvent.obtain(1,1,android.view.MotionEvent.ACTION_DOWN,10f,10f,0)
+                try { scroll.dispatchTouchEvent(down) } finally { down.recycle() }
+                scroll.scrollTo(0,200)
+                scroll.restoreWhenOverviewReady()
+                layout()
+                assertEquals(200,scroll.scrollY)
+            }
+        }
+        checkNotNull(outcome).getOrThrow()
+    }
+
     @Test fun compactStagesKeepOnlyStageDataAndMarkMissingValues() {
         val stages = listOf(ChargingProfile.Stage(20,80,45.0,60L,4_800_000L,
             "80.00 to 80.00 min (1 samples)","79.50–80.50 min possible envelope (1 spans)"))

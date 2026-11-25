@@ -41,6 +41,7 @@ class MainActivity : Activity() {
     private lateinit var curvePanel: ChargingCurvePanel
     private val historyRefreshGate = RefreshGate(300_000L)
     private var reportLoading = false
+    private var toolsExpanded = false
     private var reportDialog: AlertDialog? = null
     private lateinit var historyOperationText: TextView
     private var observedRestoreRevision = 0L
@@ -95,7 +96,11 @@ class MainActivity : Activity() {
         batteryManager = getSystemService(BATTERY_SERVICE) as BatteryManager
         telemetryThread = HandlerThread("BatteryScopeLiveTelemetry").apply { start() }
         telemetryHandler = android.os.Handler(telemetryThread.looper)
+        toolsExpanded = savedInstanceState?.getBoolean(TOOLS_EXPANDED,false) ?: false
         buildUi()
+        savedInstanceState?.takeIf { it.containsKey(DASHBOARD_SCROLL_Y) }?.let {
+            dashboardScroll.rememberRestoredOffset(it.getInt(DASHBOARD_SCROLL_Y))
+        }
         pendingExportName = savedInstanceState?.getString(PENDING_EXPORT_NAME)?.takeIf { HistoryTransfer.isSaveName(it) }
         pendingImportRequest = savedInstanceState?.getInt(PENDING_IMPORT_REQUEST, 0) ?: 0
         observedRestoreRevision = HistoryOperations.state.restoreRevision
@@ -108,6 +113,8 @@ class MainActivity : Activity() {
         super.onSaveInstanceState(outState)
         pendingExportName?.let { outState.putString(PENDING_EXPORT_NAME, it) }
         outState.putInt(PENDING_IMPORT_REQUEST, pendingImportRequest)
+        outState.putBoolean(TOOLS_EXPANDED,toolsExpanded)
+        outState.putInt(DASHBOARD_SCROLL_Y,dashboardScroll.offsetForSave())
     }
 
     override fun onResume() {
@@ -139,7 +146,7 @@ class MainActivity : Activity() {
             setPadding(margin, margin, margin, margin)
             setBackgroundColor(Color.rgb(8, 13, 22))
         }
-        val scroll = DashboardScrollView(this)
+        val scroll = DashboardScrollView(this).apply { tag = "dashboard_scroll" }
         dashboardScroll = scroll
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -168,10 +175,12 @@ class MainActivity : Activity() {
         }
         content.addView(liveSummary)
         recorderSummary = makeText(13f,Color.rgb(142,226,185),false).apply {
+            tag = "dashboard_recorder_health"
             text = "Recorder: checking"
         }
         content.addView(recorderSummary)
         stageSummary = makeText(14f, Color.rgb(230,237,247), false).apply {
+            tag = "dashboard_stages"
             text = "Charging stages (last 30 days)\nWaiting for history…"
         }
         content.addView(stageSummary)
@@ -187,15 +196,19 @@ class MainActivity : Activity() {
         addPanel(content, "Measurement rules").text =
             "Battery-side current is not charger input current. Raw charger/BMS/USB data is shown only when accessible. BatteryScope does not capture proprietary SuperDart packets, select a USB protocol or write charging controls."
 
-        val toolsToggle = Button(this).apply { text = "Show history & settings tools" }
+        val toolsToggle = Button(this).apply {
+            tag = "dashboard_tools_toggle"
+            text = if (toolsExpanded) "Hide history & settings tools" else "Show history & settings tools"
+        }
         val toolsContent = LinearLayout(this).apply {
+            tag = "dashboard_tools_content"
             orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
+            visibility = if (toolsExpanded) View.VISIBLE else View.GONE
         }
         toolsToggle.setOnClickListener {
-            val opening = toolsContent.visibility != View.VISIBLE
-            toolsContent.visibility = if (opening) View.VISIBLE else View.GONE
-            toolsToggle.text = if (opening) "Hide history & settings tools" else "Show history & settings tools"
+            toolsExpanded = !toolsExpanded
+            toolsContent.visibility = if (toolsExpanded) View.VISIBLE else View.GONE
+            toolsToggle.text = if (toolsExpanded) "Hide history & settings tools" else "Show history & settings tools"
         }
         content.addView(toolsToggle)
         content.addView(toolsContent)
@@ -829,6 +842,7 @@ class MainActivity : Activity() {
                             curvePanel.setCurves(emptyList())
                         })
                     }
+                    dashboardScroll.restoreWhenOverviewReady()
                     if (followUp) refreshHistoryDisplay(true)
                 }
             }
@@ -981,6 +995,8 @@ class MainActivity : Activity() {
         private const val SYSFS_UI_REFRESH_MS = 60_000L
         private const val PENDING_EXPORT_NAME = "pending_export_name"
         private const val PENDING_IMPORT_REQUEST = "pending_import_request"
+        private const val TOOLS_EXPANDED = "tools_expanded"
+        private const val DASHBOARD_SCROLL_Y = "dashboard_scroll_y"
         private const val CSV_EXPORT_REQUEST_CODE = 5101
         private const val BACKUP_IMPORT_REQUEST_CODE = 5103
         private const val LEGACY_IMPORT_REQUEST_CODE = 5104

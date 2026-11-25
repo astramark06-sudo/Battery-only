@@ -1,6 +1,7 @@
 package com.batteryscope
 
 import android.content.Context
+import android.view.MotionEvent
 import android.widget.ScrollView
 import android.widget.TextView
 
@@ -11,6 +12,31 @@ internal fun TextView.setTextIfChanged(value: String) {
 /** Preserve passive refresh position, while allowing ordinary touch/focus navigation. */
 internal class DashboardScrollView(context: Context) : ScrollView(context) {
     private var preserveNextLayout = false
+    private var restoredOffset: Int? = null
+    private var restoreReady = false
+
+    fun rememberRestoredOffset(y: Int) {
+        restoredOffset = y.coerceAtLeast(0)
+        restoreReady = false
+    }
+
+    fun offsetForSave(): Int = restoredOffset ?: scrollY
+
+    fun restoreWhenOverviewReady() {
+        if (restoredOffset != null) {
+            restoreReady = true
+            requestLayout()
+        }
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        // An explicit gesture takes precedence over a delayed recreation restore.
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            restoredOffset = null
+            restoreReady = false
+        }
+        return super.dispatchTouchEvent(event)
+    }
 
     fun refreshContent(update: () -> Unit) {
         val oldX = scrollX
@@ -26,7 +52,12 @@ internal class DashboardScrollView(context: Context) : ScrollView(context) {
         val oldX = scrollX
         val oldY = scrollY
         super.onLayout(changed,l,t,r,b)
-        if (preserve) scrollTo(oldX,oldY)
+        val restored = restoredOffset
+        if (restoreReady && restored != null) {
+            restoredOffset = null
+            restoreReady = false
+            scrollTo(0,restored)
+        } else if (preserve) scrollTo(oldX,oldY)
     }
 }
 

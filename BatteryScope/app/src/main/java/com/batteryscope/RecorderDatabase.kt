@@ -290,6 +290,31 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
         return ChargingDashboard(report,snapshot.chartCurves(),snapshot.stages())
     }
 
+    /** Independent recorded Android broadcasts and sampled state transitions, not packet captures. */
+    private fun connectionEventsReport(now: Long, range: SnapshotRange): String {
+        val rows = ArrayList<String>()
+        val formatter = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z",Locale.US)
+        readableDatabase.rawQuery(
+            """SELECT timestamp_ms,event_type,details FROM events
+                WHERE timestamp_ms BETWEEN ? AND ? AND id BETWEEN ? AND ?
+                AND event_type IN ('POWER_CONNECTED','POWER_DISCONNECTED','POWER_SOURCE_CHANGED','BATTERY_STATE_CHANGED')
+                ORDER BY id DESC LIMIT 24""".trimIndent(),
+            windowArgs(now-30L*86_400_000L,now,range)
+        ).use { c ->
+            while (c.moveToNext()) {
+                val details = c.getString(2).orEmpty().replace(Regex("[\\r\\n\\t]+")," ").take(160)
+                rows.add(formatter.format(Date(c.getLong(0))) + " • " + c.getString(1) +
+                    if (details.isBlank()) "" else " • " + details)
+            }
+        }
+        return buildString {
+            appendLine("=== RECORDED CONNECTION EVENTS (LAST 30 DAYS) ===")
+            appendLine("Up to 24 latest retained power broadcasts and sampled state/source changes, in recording order. Wall-clock timestamps may shift. Imported events are not authenticated; missed broadcasts are possible. These are not charger protocol messages.")
+            if (rows.isEmpty()) appendLine("No matching recorded events.")
+            else rows.asReversed().forEach { appendLine(it) }
+        }
+    }
+
     private fun historySummaryInternal(now: Long, chargingFocus: Boolean, capture: ((ChargingProfile) -> Unit)?): String {
         val windows = listOf(
             "24 HOURS" to 24L * 60 * 60 * 1000,
@@ -299,8 +324,9 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
             "365 DAYS" to 365L * 24 * 60 * 60 * 1000,
             "ALL TIME" to Long.MAX_VALUE
         )
-        // Fix row bounds across all report queries. New samples/restores are visible on the next refresh.
-        val range = snapshot(readableDatabase).samples
+        // Fix both sample and event bounds across report queries.
+        val history = snapshot(readableDatabase)
+        val range = history.samples
         // Keep only bounded summaries of recent runs, never the complete row list.
         val recent = readRecentSessions(now - 30L * 24 * 60 * 60 * 1000, now, range)
         val latestReading = readableDatabase.rawQuery(
@@ -368,8 +394,10 @@ class RecorderDatabase(context: Context, databaseName: String = "batteryscope_hi
                 }
             }
             appendLine()
-            if (chargingFocus) appendLine(chargingEvidenceReport(now,range,capture))
-            else appendLine(resourceHistoryReport(now, range))
+            if (chargingFocus) {
+                appendLine(chargingEvidenceReport(now,range,capture))
+                appendLine(connectionEventsReport(now,history.events))
+            } else appendLine(resourceHistoryReport(now, range))
             appendLine()
             appendLine("=== MOST RECENT CHARGING SESSION (LAST 30 DAYS) ===")
             appendLine(sessionReport(recent.charging.firstOrNull(), recent.hasSamples, true, chargingFocus))

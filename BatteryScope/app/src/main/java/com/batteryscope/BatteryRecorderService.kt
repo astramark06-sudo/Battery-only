@@ -127,7 +127,10 @@ class BatteryRecorderService : Service() {
             notificationHandler.removeCallbacksAndMessages(null)
             releaseSamplingWakeLock()
             // A raced startForegroundService request must still meet the foreground deadline.
-            try { startAsForeground() } finally { stopSelf(startId) }
+            try { startAsForeground() }
+            catch (e: Exception) {
+                prefs.edit().putString(KEY_START_FAILURE,"Paused start: " + e.javaClass.simpleName).apply()
+            } finally { stopSelf(startId) }
             return START_NOT_STICKY
         }
         val wasRunning = recorderRunning
