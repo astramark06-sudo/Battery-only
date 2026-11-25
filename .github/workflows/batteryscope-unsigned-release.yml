@@ -1,0 +1,83 @@
+name: BatteryScope unsigned release candidate
+
+on:
+  pull_request:
+    paths:
+      - "BatteryScope/app/**"
+      - "BatteryScope/tools/**"
+      - "BatteryScope/build.gradle.kts"
+      - "BatteryScope/settings.gradle.kts"
+      - "BatteryScope/gradle.properties"
+      - ".github/workflows/batteryscope-unsigned-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: batteryscope-unsigned-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-unsigned:
+    name: Assemble and inspect unsigned non-debug candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools
+      - name: Install SDK
+        run: |
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager "platforms;android-35" "build-tools;36.0.0"
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a
+        with:
+          gradle-version: "9.4.1"
+          cache-disabled: true
+      - name: Build unsigned release variant
+        working-directory: BatteryScope
+        run: gradle --no-daemon --no-build-cache --no-configuration-cache --stacktrace :app:assembleRelease :app:lintRelease
+      - name: Verify non-debug metadata and archive integrity
+        working-directory: BatteryScope
+        run: |
+          APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -s "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | tee unsigned-release-badging.txt
+          python3 - <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
+          sys.path.insert(0, "tools")
+          from verify_apk_update import check_release_badging, parse_badging
+          badging = Path("unsigned-release-badging.txt").read_text(encoding="utf-8")
+          check_release_badging(badging, "1.15")
+          if parse_badging(badging) != ("com.batteryscope", 16):
+              raise SystemExit("Unexpected release identity")
+          with zipfile.ZipFile("app/build/outputs/apk/release/app-release-unsigned.apk") as archive:
+              if archive.testzip() is not None or "AndroidManifest.xml" not in archive.namelist():
+                  raise SystemExit("Invalid APK archive")
+          PY
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -v 4 "$APK"
+          sha256sum "$APK" | tee unsigned-release-sha256.txt
+          echo "Unsigned non-debug candidate only. Owner must sign and verify before physical acceptance."
+      - name: Upload unsigned candidate and verification reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: BatteryScope-UNSIGNED-NOT-INSTALLABLE-${{ github.sha }}
+          path: |
+            BatteryScope/app/build/outputs/apk/release/app-release-unsigned.apk
+            BatteryScope/unsigned-release-badging.txt
+            BatteryScope/unsigned-release-sha256.txt
+            BatteryScope/app/build/reports/lint-results-release.*
+          if-no-files-found: error
+          retention-days: 14
