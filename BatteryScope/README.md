@@ -1,5 +1,10 @@
 # BatteryScope 1.15 — Realme Narzo 20 Pro (RMX2161)
 
+## 2026-11-25 — Charging curve checkpoints and SOC-band temperature
+
+- Charging-focused 30-day report now includes per-SOC-band observed battery temperature ranges and the most recent eligible same-source, known-same-boot charging segment as elapsed-time/SOC/temperature checkpoints. Adaptive sequence thinning bounds retained points to 16, preserves observed endpoints, and never interpolates. A recording gap, invalid SOC, unknown boot, reboot or source/state change breaks the segment. A recorded decline remains visible. No electrical quantities are inferred. The checkpoint table is groundwork for a graphical chart, not a native graph or a complete plug-in session.
+- Added JVM regressions for retention bounds, actual endpoint identity, segment splits, and temperature coverage. Previous head `9339969b0d36f34a9b90d6d43bd29a1317115e1f` passed Android CI 45487907197 and signing CI 45487907298; new cumulative CI required. Native chart, physical-device validation, actual charger input and trusted update signing remain open. No schema/version/permission/signing changes; no private export committed.
+
 ## 2026-11-25 — Charging-specific measurement evidence and SOC-band profile
 
 - Last-30-day charging-only observations show raw voltage/current range, expected-unit/direction quality counts, battery temperature, usable API-convention battery power coverage, recorded unverified USB pair count and nominal SOC-counter proportionality. Never infer actual current or charger watts from SOC. No proprietary fast-charge status inference.

@@ -24,6 +24,43 @@ class ChargingProfileTest {
         assertTrue(report.report().contains("4/4 paired samples"))
     }
 
+    @Test fun curveRetainsActualEndpointsAndBoundsMemory() {
+        val r = ChargingProfile()
+        repeat(1000) { i -> r.accept(sample(1000L + i*30_000L, i%101)) }
+        val c = r.latestCurve!!
+        val points = c.points()
+        assertEquals(1000L,c.count)
+        assertTrue(points.size <= 16)
+        assertEquals(1000L,points.first().elapsed)
+        assertEquals(1000L+999*30_000L,points.last().elapsed)
+        assertTrue(points.zipWithNext().all { (a,b) -> a.elapsed < b.elapsed })
+        assertTrue(points.all { it.percent == ((it.elapsed-1000L)/30_000L%101).toInt() })
+        assertEquals(1000L,r.bandTemperatures.sumOf { it.count })
+        assertTrue(r.report().contains("1000 observations"))
+    }
+
+    @Test fun curveSplitsAtGapsInvalidLevelsAndSourceChanges() {
+        val r = ChargingProfile()
+        r.accept(sample(1000,15))
+        r.accept(sample(31000,14).copy(temperatureC = null))
+        assertEquals(listOf(15,14),r.latestCurve!!.points().map { it.percent })
+        r.accept(sample(131001,16))
+        assertEquals(1L,r.latestCurve!!.count)
+        r.accept(sample(161001,17).copy(percent = null))
+        r.accept(sample(191001,18))
+        assertEquals(1L,r.latestCurve!!.count)
+        r.accept(sample(221001,19,plug="USB"))
+        assertEquals("USB",r.latestCurve!!.first.plug)
+        r.accept(sample(251001,20,boot=10,plug="USB"))
+        assertEquals(1L,r.latestCurve!!.count)
+        r.accept(sample(281001,20,boot=null,plug="USB"))
+        r.accept(sample(311001,21,boot=10,plug="USB"))
+        assertEquals(1L,r.latestCurve!!.count)
+        r.accept(sample(341001,22,boot=10,state="FULL",plug="USB"))
+        assertEquals(21,r.latestCurve!!.last.percent)
+        assertTrue(r.report().contains("sampled temperature"))
+    }
+
     @Test fun rejectsGapsBootChangesReversalsAndCrossBandJumps() {
         val r = ChargingProfile()
         r.accept(sample(1000,15))
