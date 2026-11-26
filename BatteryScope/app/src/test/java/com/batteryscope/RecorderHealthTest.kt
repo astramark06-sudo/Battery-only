@@ -4,6 +4,26 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RecorderHealthTest {
+    @Test fun overdueChecksNeverSampleEarlyAndKeepElapsedDeadline() {
+        assertFalse(RecorderClock.isDue(29_999L,30_000L))
+        assertTrue(RecorderClock.isDue(30_000L,30_000L))
+        assertTrue(RecorderClock.isDue(300_000L,30_000L))
+        assertFalse(RecorderClock.isDue(0L,-1L))
+        val next = RecorderCadence.nextSlot(30_000L,300_000L,30_000L)
+        assertEquals(330_000L,next.elapsedMs)
+        assertFalse(RecorderClock.isDue(300_001L,next.elapsedMs))
+    }
+
+    @Test fun clockEvidenceSeparatesSuspendFromAwakeTimeAndRejectsReset() {
+        val before = RecorderClock(100_000L,70_000L)
+        assertEquals(0L,RecorderClock(130_000L,100_000L).suspendSince(before)!!)
+        assertEquals(90_000L,RecorderClock(220_000L,100_000L).suspendSince(before)!!)
+        assertEquals(0L,RecorderClock(130_000L,100_001L).suspendSince(before)!!)
+        assertNull(RecorderClock(99_999L,100_000L).suspendSince(before))
+        assertNull(RecorderClock(130_000L,69_999L).suspendSince(before))
+        assertNull(RecorderClock(-1L,0L).suspendSince(before))
+    }
+
     @Test fun cadenceCompensatesForProcessingWithoutCatchUpBursts() {
         assertEquals(30_000L, RecorderCadence.nextDelayMs(100,100,30_000))
         assertEquals(25_000L, RecorderCadence.nextDelayMs(100,5_100,30_000))

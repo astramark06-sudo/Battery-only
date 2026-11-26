@@ -16,6 +16,20 @@ internal object RecorderCadence {
     }
 }
 
+/** Clocks from this service session; difference estimates suspend, not its cause. */
+internal data class RecorderClock(val elapsedMs: Long, val uptimeMs: Long) {
+    fun suspendSince(before: RecorderClock): Long? {
+        if (elapsedMs < 0 || uptimeMs < 0 || before.elapsedMs < 0 || before.uptimeMs < 0 ||
+            elapsedMs < before.elapsedMs || uptimeMs < before.uptimeMs) return null
+        return ((elapsedMs - before.elapsedMs) - (uptimeMs - before.uptimeMs)).coerceAtLeast(0L)
+    }
+
+    companion object {
+        fun isDue(nowElapsedMs: Long, deadlineElapsedMs: Long): Boolean =
+            deadlineElapsedMs >= 0L && nowElapsedMs >= deadlineElapsedMs
+    }
+}
+
 /** Process-local health. Elapsed timestamps never cross a process/boot boundary. */
 internal data class RecorderHealth(
     val startedElapsedMs: Long,

@@ -21,6 +21,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Automatically requested persistent foreground recorder. No activity lifecycle owns this sampler. */
 class BatteryRecorderService : Service() {
@@ -41,12 +42,14 @@ class BatteryRecorderService : Service() {
     private lateinit var inventoryWorker: HandlerThread
     private lateinit var inventoryHandler: Handler
     private val inventoryHandoff = InventoryHandoff<Map<String, String>>(SYSFS_INTERVAL_MS)
-    private var nextDeadlineElapsedMs = 0L
+    @Volatile private var nextDeadlineElapsedMs = 0L
+    private val overdueCheckQueued = AtomicBoolean(false)
+    private var previousCommittedClock: RecorderClock? = null
     private val notificationHandler = Handler(Looper.getMainLooper())
     private var lastNotificationState: String? = null
     private var receiverRegistered = false
     @Volatile private var recorderRunning = false
-    private var samplingWakeLock: PowerManager.WakeLock? = null
+    @Volatile private var samplingWakeLock: PowerManager.WakeLock? = null
     @Volatile private var sampleHealth = RecorderHealth(SystemClock.elapsedRealtime())
 
     private val receiver = object : BroadcastReceiver() {
@@ -60,12 +63,17 @@ class BatteryRecorderService : Service() {
                 Intent.ACTION_POWER_CONNECTED -> {
                     chargerLabels.boundary()
                     event("POWER_CONNECTED", "Android power-connected broadcast")
+                    checkOverdueSample()
                 }
                 Intent.ACTION_POWER_DISCONNECTED -> {
                     chargerLabels.boundary()
                     event("POWER_DISCONNECTED", "Android power-disconnected broadcast")
+                    checkOverdueSample()
                 }
-                Intent.ACTION_SCREEN_ON -> event("SCREEN_ON", "Display became interactive")
+                Intent.ACTION_SCREEN_ON -> {
+                    event("SCREEN_ON", "Display became interactive")
+                    checkOverdueSample()
+                }
                 Intent.ACTION_SCREEN_OFF -> event("SCREEN_OFF", "Display became non-interactive")
                 Intent.ACTION_BATTERY_LOW -> event("BATTERY_LOW", "Android battery-low broadcast")
                 Intent.ACTION_BATTERY_OKAY -> event("BATTERY_OKAY", "Battery-low condition cleared")
@@ -83,9 +91,14 @@ class BatteryRecorderService : Service() {
                     recordSchedulingFailure("Recorder worker rejected next sample")
                 return
             }
+            val clock = RecorderClock(started, SystemClock.uptimeMillis())
+            val due = nextDeadlineElapsedMs
             val cpuStarted = SystemClock.currentThreadTimeMillis()
             var failure: String? = null
-            try { sample(started) }
+            try {
+                sample(started, clock, due)
+                previousCommittedClock = clock
+            }
             catch (t: Exception) { failure = t.javaClass.simpleName + ": " + (t.message ?: "unknown") }
             catch (fatal: Error) {
                 recordOutcome(started, SystemClock.elapsedRealtime(), "Fatal sample failure: " + fatal.javaClass.simpleName,
@@ -107,11 +120,30 @@ class BatteryRecorderService : Service() {
         }
     }
 
+    /** Recheck elapsed deadlines on existing wakes; Handler delays use uptime.
+     * Serialize with the sampler, coalesce checks and never generate catch-up rows. */
+    private fun checkOverdueSample() {
+        if (!recorderRunning || !RecorderClock.isDue(SystemClock.elapsedRealtime(), nextDeadlineElapsedMs)) return
+        if (!overdueCheckQueued.compareAndSet(false, true)) return
+        if (!handler.post {
+            try {
+                if (recorderRunning && RecorderClock.isDue(SystemClock.elapsedRealtime(), nextDeadlineElapsedMs)) {
+                    handler.removeCallbacks(sampler)
+                    sampler.run()
+                }
+            } finally { overdueCheckQueued.set(false) }
+        }) {
+            overdueCheckQueued.set(false)
+            event("SAMPLE_NUDGE_REJECTED", "Recorder worker rejected overdue check")
+        }
+    }
+
     // Main-thread observation of stale state also works while a worker is blocked.
     private val notificationWatch = object : Runnable {
         override fun run() {
             if (!recorderRunning) return
             refreshRecorderNotification()
+            checkOverdueSample()
             notificationHandler.postDelayed(this, 15_000L)
         }
     }
@@ -162,6 +194,7 @@ class BatteryRecorderService : Service() {
             if (!wasRunning) {
                 nextDeadlineElapsedMs = SystemClock.elapsedRealtime()
                 sampleHealth = RecorderHealth(nextDeadlineElapsedMs)
+                previousCommittedClock = null
                 recorderRunning = true
                 activeRecorder = this
                 notificationHandler.post(notificationWatch)
@@ -327,7 +360,7 @@ class BatteryRecorderService : Service() {
         }
     }
 
-    private fun sample(elapsed: Long) {
+    private fun sample(elapsed: Long, clock: RecorderClock, due: Long) {
         val now = System.currentTimeMillis()
         val inventory = inventoryHandoff.readyFor(elapsed)
         requestInventory(elapsed)
@@ -400,7 +433,21 @@ class BatteryRecorderService : Service() {
             event("BATTERY_VOLTAGE_QUALITY", "quality=" + voltageQuality + "; raw_extra_voltage=" + (voltage?.toString() ?: "UNAVAILABLE") + "; expected_unit=mV")
             lastVoltageMeasurementQuality = voltageQuality
         }
-        val screenOn = (getSystemService(POWER_SERVICE) as PowerManager).isInteractive
+        val power = getSystemService(POWER_SERVICE) as PowerManager
+        val screenOn = power.isInteractive
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val scheduling = JSONObject()
+            .put("scheduled_elapsed_ms", due)
+            .put("start_uptime_ms", clock.uptimeMs)
+            .put("start_lateness_ms", (clock.elapsedMs - due).coerceAtLeast(0L))
+            .put("wake_lock_requested", prefs.getBoolean(KEY_KEEP_CPU_AWAKE, true))
+            .put("wake_lock_held", samplingWakeLock?.isHeld == true)
+            .put("device_idle_mode", power.isDeviceIdleMode)
+            .put("power_save_mode", power.isPowerSaveMode)
+            .put("ignoring_battery_optimizations", power.isIgnoringBatteryOptimizations(packageName))
+        previousCommittedClock?.let { before ->
+            clock.suspendSince(before)?.let { scheduling.put("approx_suspend_since_previous_committed_start_ms", it) }
+        }
         val inventoryJson = inventory?.let {
             JSONObject(it.value)
                 .put("@inventory_request_started_elapsed_ms", it.startedElapsedMs)
@@ -445,6 +492,7 @@ class BatteryRecorderService : Service() {
             metadata.put("@battery_broadcast_read_elapsed_ms",broadcastReadElapsed)
             metadata.put("@battery_property_status",JSONObject(lastBatteryPropertyStatus.mapKeys { it.key.toString() }))
             chargerLabel?.let { metadata.put(ChargerLabelJson.KEY,ChargerLabelJson.encode(it)) }
+            metadata.put("@recorder/scheduling_v1", scheduling)
             metadata.put("@recorder/sample_collection_finished_elapsed_ms",SystemClock.elapsedRealtime())
             put("power_supply_json",metadata.toString())
             if (usb != null) {

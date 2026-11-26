@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.BatteryManager
+import android.os.PowerManager
 import android.os.HandlerThread
 import java.util.concurrent.atomic.AtomicBoolean
 import android.os.Build
@@ -423,6 +424,10 @@ class MainActivity : Activity() {
         val recorderPrefs = getSharedPreferences(BatteryRecorderService.PREFS, MODE_PRIVATE)
         lines += "Recorder screen-off mode requested: " + if (keepAwake) "continuous (may add app drain)" else "low-impact (screen-off gaps possible)"
         lines += "Last reported wake lock held: " + recorderPrefs.getBoolean(BatteryRecorderService.KEY_WAKE_LOCK_HELD, false) + " (service-reported; not proof of current process liveness)"
+        val power = getSystemService(POWER_SERVICE) as PowerManager
+        lines += "Android battery optimisation exemption: " + if (power.isIgnoringBatteryOptimizations(packageName)) "yes" else "no — consider Battery optimisation settings if screen-off gaps persist"
+        lines += "Current Android device idle / power saver: ${power.isDeviceIdleMode} / ${power.isPowerSaveMode}"
+        lines += "A held wake lock does not prove the CPU stayed awake; sample export contains observed elapsed/uptime and policy state."
         lines += "Process-local recorder health: " + BatteryRecorderService.liveHealthReport()
         val lastCommit = recorderPrefs.getLong(BatteryRecorderService.KEY_LAST_SUCCESS_WALL, 0L)
         lines += "Last reported successful database commit (historical wall time): " +
