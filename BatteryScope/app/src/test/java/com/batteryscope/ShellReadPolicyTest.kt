@@ -21,6 +21,13 @@ class ShellReadPolicyTest {
         val fields = ShellReadPolicy.parseLegacy("level: 82\nvoltage: 3\nserial: hidden\nSYS\tbattery/current_now\t-123\nSYS\t../../etc/passwd\tbad\nSYS\tusb/serial\tbad\nSYS\tbattery/current_now\tother")
         assertEquals(mapOf("battery_dump/level" to "82","battery_dump/voltage" to "3","power_supply/battery/current_now" to "-123"),fields)
     }
+    @Test fun readableCountExcludesScanMetadataAndErrors() {
+        val fields = mapOf("@shell" to "2000","power_supply/@root" to "VISIBLE",
+            "power_supply/@scan" to "FINISHED","power_supply/battery/current_now" to "READ_DENIED",
+            "power_supply/battery/voltage_now" to "ERROR:IOException","battery_dump/voltage" to "3",
+            "battery_dump/level" to "82","power_supply/battery/temp" to "")
+        assertEquals(2,ShellReadPolicy.readableCount(fields))
+    }
     @Test fun fixedCommandHasNoUserArgumentAndIsBounded() {
         val command = ShellReadPolicy.legacyCommand()
         assertEquals(listOf("/system/bin/toybox","timeout","12","/system/bin/sh","-c"),command.take(5))

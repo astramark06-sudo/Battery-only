@@ -437,6 +437,7 @@ class MainActivity : Activity() {
         lines += "Shizuku server: " + ShellChargingDiagnostics.serverDescription()
         lines += "Shizuku charging diagnostics: " + ShellChargingDiagnostics.status
         lines += "Privileged readings are separate raw observations in history; not automatic electrical calibration."
+        lines += ShellChargingDiagnostics.rawSummary()
         lines += "Process-local recorder health: " + BatteryRecorderService.liveHealthReport()
         val lastCommit = recorderPrefs.getLong(BatteryRecorderService.KEY_LAST_SUCCESS_WALL, 0L)
         lines += "Last reported successful database commit (historical wall time): " +

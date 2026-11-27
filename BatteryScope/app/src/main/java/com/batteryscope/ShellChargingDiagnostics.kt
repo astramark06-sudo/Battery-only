@@ -11,6 +11,10 @@ import android.os.SystemClock
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Process-local explicit opt-in. No read or connection failure can block normal inventory. */
@@ -18,6 +22,10 @@ internal object ShellChargingDiagnostics {
     private val main = Handler(Looper.getMainLooper())
     private val primaryExecutor = Executors.newSingleThreadExecutor { Thread(it,"BatteryScopeShellRead").apply { isDaemon = true } }
     private val legacyExecutor = Executors.newSingleThreadExecutor { Thread(it,"BatteryScopeShellCompat").apply { isDaemon = true } }
+    private val control = ThreadPoolExecutor(1,1,0L,TimeUnit.MILLISECONDS,ArrayBlockingQueue<Runnable>(8)) { task ->
+        Thread(task,"BatteryScopeShellControl").apply { isDaemon = true }
+    }
+    @Volatile private var serverInfo = "not checked — enable diagnostics to inspect server"
     private val primaryBusy = AtomicBoolean()
     private val legacyBusy = AtomicBoolean()
     private val refreshQueued = AtomicBoolean()
@@ -42,7 +50,9 @@ internal object ShellChargingDiagnostics {
             Shizuku.getUid() == 2000 && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
     } catch (_: Exception) { false }
 
-    fun serverDescription(): String = try {
+    fun serverDescription(): String = serverInfo
+
+    private fun inspectServer(): String = try {
         if (!Shizuku.pingBinder()) "server not connected"
         else "API ${Shizuku.getVersion()}, patch ${Shizuku.getServerPatchVersion()}, UID ${Shizuku.getUid()}, authorized=${Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED}"
     } catch (e: Exception) { "unavailable: " + e.javaClass.simpleName }
@@ -51,6 +61,7 @@ internal object ShellChargingDiagnostics {
     fun enable(context: Context): String {
         if (enabled) return status
         if (!permitted()) return "Shizuku v12+ ADB shell permission unavailable"
+        serverInfo = inspectServer()
         enabled = true
         generation++
         latest = null
@@ -85,8 +96,14 @@ internal object ShellChargingDiagnostics {
             if (enabled && generation == token && remote == null && !fallback)
                 switchToFallback("USER_SERVICE_CONNECT_TIMEOUT")
         }
-        try { Shizuku.bindUserService(request,conn) }
-        catch (e: Exception) { switchToFallback("BIND_FAILED_" + e.javaClass.simpleName) }
+        if (!submitControl {
+            if (enabled && generation == token) {
+                try { Shizuku.bindUserService(request,conn) }
+                catch (e: Exception) { main.post {
+                    if (enabled && generation == token) switchToFallback("BIND_FAILED_" + e.javaClass.simpleName)
+                } }
+            }
+        }) switchToFallback("CONTROL_QUEUE_BUSY")
         return status
     }
 
@@ -98,6 +115,11 @@ internal object ShellChargingDiagnostics {
         main.postDelayed(task,ms)
     }
 
+    private fun submitControl(action: () -> Unit): Boolean = try {
+        control.execute { action() }
+        true
+    } catch (_: RejectedExecutionException) { false }
+
     private fun detach() {
         val request = args
         val conn = connection
@@ -105,8 +127,12 @@ internal object ShellChargingDiagnostics {
         connection = null
         args = null
         if (request != null && conn != null) {
-            try { Shizuku.unbindUserService(request,conn,true) } catch (_: Exception) {}
-            try { Shizuku.unbindUserService(request,conn,false) } catch (_: Exception) {}
+            // Same serial queue as bind, so cleanup precedes any later bind for this tag.
+            // A wedged server may delay cleanup, but no late data is accepted.
+            if (!submitControl {
+                try { Shizuku.unbindUserService(request,conn,true) } catch (_: Exception) {}
+                try { Shizuku.unbindUserService(request,conn,false) } catch (_: Exception) {}
+            }) serverInfo += " — cleanup queue busy; restart app if service persists"
         }
     }
 
@@ -121,6 +147,7 @@ internal object ShellChargingDiagnostics {
         detach()
         fallback = false
         status = reason
+        if (reason != "OFF") serverInfo = reason
     }
 
     private fun switchToFallback(reason: String) {
@@ -183,9 +210,7 @@ internal object ShellChargingDiagnostics {
                 if (!permitted()) { stop("PERMISSION_OR_SERVER_UNAVAILABLE"); return@post }
                 outcome.fold(onSuccess = { fields ->
                     latest = Reading(token,start,finished,source,fields)
-                    val available = fields.filterKeys { !it.startsWith("@") }.values.count {
-                        it.isNotBlank() && it != "READ_DENIED" && it != "EMPTY" && !it.startsWith("ERROR:")
-                    }
+                    val available = ShellReadPolicy.readableCount(fields)
                     status = (if (useLegacy) fallbackReason + " — COMPATIBILITY_CONNECTED" else "USER_SERVICE_CONNECTED") +
                         " — $available readable raw fields"
                 },onFailure = {
@@ -208,7 +233,7 @@ internal object ShellChargingDiagnostics {
             val key = keys.next()
             val value = json.opt(key)
             if (key.length <= 512 && value is String && value.length <= 300 &&
-                (key.startsWith("@") || key.substringBefore('/') in KernelInventory.chargingRoots.map { it.name }))
+                (key.startsWith("@") || key.startsWith("battery_dump/") || key.substringBefore('/') in KernelInventory.chargingRoots.map { it.name }))
                 result[key] = value
         }
         return result
@@ -221,27 +246,24 @@ internal object ShellChargingDiagnostics {
         val method = Shizuku::class.java.getDeclaredMethod("newProcess",Array<String>::class.java,Array<String>::class.java,String::class.java)
         method.isAccessible = true
         val proc = method.invoke(null,ShellReadPolicy.legacyCommand(),null,null) as Process
-        try {
-            val out = proc.inputStream.use { input ->
-                val buffer = java.io.ByteArrayOutputStream()
-                val chunk = ByteArray(4096)
-                while (buffer.size() < 65_536) {
-                    val n = input.read(chunk,0,minOf(chunk.size,65_536-buffer.size()))
-                    if (n < 0) break
-                    if (n == 0) continue
-                    buffer.write(chunk,0,n)
-                }
-                check(buffer.size() < 65_536) { "Output limit" }
-                buffer.toString("UTF-8")
-            }
-            check(proc.waitFor() == 0) { "Compatibility command failed" }
-            return ShellReadPolicy.parseLegacy(out).also { check(it.isNotEmpty()) { "No allowlisted output" } }
-        } finally { try { proc.destroy() } catch (_: Exception) {} }
+        return ShellReadPolicy.readFixedProcess(proc).also { check(it.isNotEmpty()) { "No allowlisted output" } }
+    }
+
+    /** Cached display only; never performs privileged IPC on UI or ordinary inventory threads. */
+    fun rawSummary(): String {
+        val reading = latest ?: return "No privileged measurements saved yet"
+        if (!enabled || !ShellReadPolicy.fresh(reading.generation,generation,reading.started,SystemClock.elapsedRealtime())) return "No fresh privileged measurements"
+        val data = reading.data.filterKeys { !it.startsWith("@") && !it.substringAfterLast('/').startsWith("@") }
+        return buildString {
+            append(reading.source + " • raw values, not calibrated units")
+            data.entries.sortedBy { it.key }.take(40).forEach { append("\n  " + it.key + " = " + it.value) }
+            if (data.size > 40) append("\n  Additional fields in CSV: " + (data.size-40))
+        }
     }
 
     /** Returns immediately; source age is explicit and stale generation results are discarded. */
     fun snapshot(): Map<String,String> {
-        if (!enabled) return emptyMap()
+        if (!enabled) return if (status == "OFF") emptyMap() else mapOf("@shizuku/status" to status)
         if (refreshQueued.compareAndSet(false,true)) {
             main.post {
                 refreshQueued.set(false)

@@ -32,10 +32,35 @@ internal object ShellReadPolicy {
         }
         return result
     }
+    fun readableCount(data: Map<String,String>): Int = data.entries.count { (key,value) ->
+        !key.startsWith("@") && !key.substringAfterLast('/').startsWith("@") &&
+            value.isNotBlank() && value != "READ_DENIED" && value != "EMPTY" && !value.startsWith("ERROR:")
+    }
+
+    /** Fixed process only; callers own authorization and worker deadlines. Never save unknown output. */
+    fun readFixedProcess(proc: Process): Map<String,String> {
+        try {
+            val out = proc.inputStream.use { input ->
+                val buffer = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(4096)
+                while (buffer.size() < 65_536) {
+                    val n = input.read(chunk,0,minOf(chunk.size,65_536-buffer.size()))
+                    if (n < 0) break
+                    if (n == 0) continue
+                    buffer.write(chunk,0,n)
+                }
+                check(buffer.size() < 65_536) { "Output limit" }
+                buffer.toString("UTF-8")
+            }
+            check(proc.waitFor() == 0) { "Read-only command failed" }
+            return parseLegacy(out)
+        } finally { try { proc.destroy() } catch (_: Exception) {} }
+    }
+
     /** Constant command, never accepts user input or output as executable text. */
     fun legacyCommand(): Array<String> {
         val script = buildString {
-            append("/system/bin/dumpsys -t 4 battery; ")
+            append("/system/bin/dumpsys -t 4 battery 2>/dev/null; ")
             for (node in nodes) for (field in fields) {
                 val path = "/sys/class/power_supply/$node/$field"
                 append("if [ -f '$path' ]; then printf 'SYS\\t$node/$field\\t'; ")
