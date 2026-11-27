@@ -16,7 +16,8 @@ class DeviceTelemetryAndroidTest {
             "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
             "android.permission.POST_NOTIFICATIONS",
             "android.permission.WAKE_LOCK",
-            "android.permission.RECEIVE_BOOT_COMPLETED"
+            "android.permission.RECEIVE_BOOT_COMPLETED",
+            "moe.shizuku.manager.permission.API_V23"
         ),info.requestedPermissions.orEmpty().toSet())
         val flags = checkNotNull(info.applicationInfo).flags
         assertEquals(0,flags and android.content.pm.ApplicationInfo.FLAG_ALLOW_BACKUP)

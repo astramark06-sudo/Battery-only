@@ -21,6 +21,7 @@ EXPECTED_PERMISSIONS = frozenset({
     "android.permission.POST_NOTIFICATIONS",
     "android.permission.WAKE_LOCK",
     "android.permission.RECEIVE_BOOT_COMPLETED",
+    "moe.shizuku.manager.permission.API_V23",
 })
 
 
@@ -54,7 +55,7 @@ def parse_badging(output: str) -> tuple[str, int]:
 
 
 def check_permission_badging(output: str) -> None:
-    """Require exactly the current five unconditional app permissions.
+    """Require exactly the current six unconditional app permissions.
 
     Reject missing, duplicate, unexpected, implied, SDK-conditional or
     unrecognized permission declarations rather than silently ignoring them.
@@ -184,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     trust.add_argument("--expected-cert", help="Trusted installed certificate SHA-256, not the APK checksum")
     parser.add_argument("--installed-version-code", type=int)
     parser.add_argument("--allow-same-version", action="store_true", help="Developer verification only, not release approval")
-    parser.add_argument("--release-version-name", help="Also require exact versionName, non-debug APK and the exact five-permission allowlist")
+    parser.add_argument("--release-version-name", help="Also require exact versionName, non-debug APK and the exact six-permission allowlist")
     parser.add_argument("--apksigner")
     parser.add_argument("--aapt")
     args = parser.parse_args(argv)

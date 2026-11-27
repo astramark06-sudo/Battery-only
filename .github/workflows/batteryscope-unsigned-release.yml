@@ -60,8 +60,8 @@ jobs:
           sys.path.insert(0, "tools")
           from verify_apk_update import check_release_badging, parse_badging
           badging = Path("unsigned-release-badging.txt").read_text(encoding="utf-8")
-          check_release_badging(badging, "1.15")
-          if parse_badging(badging) != ("com.batteryscope", 16):
+          check_release_badging(badging, "1.16")
+          if parse_badging(badging) != ("com.batteryscope", 17):
               raise SystemExit("Unexpected release identity")
           with zipfile.ZipFile("app/build/outputs/apk/release/app-release-unsigned.apk") as archive:
               if archive.testzip() is not None or "AndroidManifest.xml" not in archive.namelist():

@@ -539,7 +539,7 @@ class BatteryRecorderService : Service() {
             try {
                 if (recorderRunning) {
                     val started = SystemClock.elapsedRealtime()
-                    val fields = HardwareSnapshotCache.snapshot(applicationContext, SYSFS_INTERVAL_MS)
+                    val fields = HardwareSnapshotCache.snapshot(applicationContext, SYSFS_INTERVAL_MS) + ShellChargingDiagnostics.snapshot()
                     val finished = SystemClock.elapsedRealtime()
                     if (recorderRunning) {
                         inventoryHandoff.complete(fields, started, finished)

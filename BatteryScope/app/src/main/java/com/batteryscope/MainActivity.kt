@@ -102,6 +102,7 @@ class MainActivity : Activity() {
         telemetryHandler = android.os.Handler(telemetryThread.looper)
         toolsExpanded = savedInstanceState?.getBoolean(TOOLS_EXPANDED,false) ?: false
         buildUi()
+        rikka.shizuku.Shizuku.addRequestPermissionResultListener(shellPermissionListener)
         savedInstanceState?.takeIf { it.containsKey(DASHBOARD_SCROLL_Y) }?.let {
             dashboardScroll.rememberRestoredOffset(it.getInt(DASHBOARD_SCROLL_Y))
         }
@@ -136,6 +137,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        rikka.shizuku.Shizuku.removeRequestPermissionResultListener(shellPermissionListener)
         handler.removeCallbacksAndMessages(null)
         reportDialog?.dismiss()
         reportDialog = null
@@ -285,6 +287,10 @@ class MainActivity : Activity() {
             setOnClickListener { openBatteryOptimisationSettings() }
         }
         toolsContent.addView(batterySettingsButton, LinearLayout.LayoutParams(-1, -2))
+        toolsContent.addView(Button(this).apply {
+            text = "Shizuku: enable / disable read-only charging diagnostics"
+            setOnClickListener { toggleShellDiagnostics() }
+        }, LinearLayout.LayoutParams(-1, -2))
         samplingModeButton = Button(this).apply {
             setOnClickListener { toggleSamplingMode() }
         }
@@ -428,6 +434,8 @@ class MainActivity : Activity() {
         lines += "Android battery optimisation exemption: " + if (power.isIgnoringBatteryOptimizations(packageName)) "yes" else "no — consider Battery optimisation settings if screen-off gaps persist"
         lines += "Current Android device idle / power saver: ${power.isDeviceIdleMode} / ${power.isPowerSaveMode}"
         lines += "A held wake lock does not prove the CPU stayed awake; sample export contains observed elapsed/uptime and policy state."
+        lines += "Shizuku charging diagnostics: " + ShellChargingDiagnostics.status
+        lines += "Privileged readings are separate raw observations in history; not automatic electrical calibration."
         lines += "Process-local recorder health: " + BatteryRecorderService.liveHealthReport()
         val lastCommit = recorderPrefs.getLong(BatteryRecorderService.KEY_LAST_SUCCESS_WALL, 0L)
         lines += "Last reported successful database commit (historical wall time): " +
@@ -866,6 +874,33 @@ class MainActivity : Activity() {
         } else {
             "Requested mode: LOW-IMPACT (wake lock off requested) — tap for continuous"
         }
+    }
+
+    private val shellPermissionListener = rikka.shizuku.Shizuku.OnRequestPermissionResultListener { code, result ->
+        if (code == 7316 && !isFinishing && !isDestroyed) {
+            statusText.text = if (result == PackageManager.PERMISSION_GRANTED)
+                ShellChargingDiagnostics.enable(applicationContext) else "Shizuku permission not granted"
+        }
+    }
+
+    private fun toggleShellDiagnostics() {
+        statusText.text = try {
+            if (ShellChargingDiagnostics.enabled) {
+                ShellChargingDiagnostics.disable()
+                "Shizuku charging diagnostics disabled"
+            } else if (!rikka.shizuku.Shizuku.pingBinder()) {
+                "Start Shizuku first, then tap again"
+            } else if (rikka.shizuku.Shizuku.getUid() != 2000 || rikka.shizuku.Shizuku.isPreV11()) {
+                "Requires Shizuku ADB shell (UID 2000), not root"
+            } else if (rikka.shizuku.Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                ShellChargingDiagnostics.enable(applicationContext)
+            } else if (rikka.shizuku.Shizuku.shouldShowRequestPermissionRationale()) {
+                "Allow BatteryScope in Shizuku's authorized apps, then tap again"
+            } else {
+                rikka.shizuku.Shizuku.requestPermission(7316)
+                "Approve read-only charging diagnostics in Shizuku"
+            }
+        } catch (e: Exception) { "Shizuku unavailable: " + e.javaClass.simpleName }
     }
 
     private fun openBatteryOptimisationSettings() {

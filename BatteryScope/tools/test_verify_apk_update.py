@@ -21,6 +21,7 @@ PERMISSIONS = (
     "android.permission.POST_NOTIFICATIONS",
     "android.permission.WAKE_LOCK",
     "android.permission.RECEIVE_BOOT_COMPLETED",
+    "moe.shizuku.manager.permission.API_V23",
 )
 PERMISSION_BADGING = "".join(f"uses-permission: name='{p}'\n" for p in PERMISSIONS)
 RELEASE = BADGING + PERMISSION_BADGING + "application: label='BatteryScope' icon='icon.png'\n"
