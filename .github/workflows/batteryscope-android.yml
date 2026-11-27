@@ -76,8 +76,8 @@ jobs:
           test -s "$APK"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | tee apk-badging.txt
           grep -q "package: name='com.batteryscope'" apk-badging.txt
-          grep -q "versionCode='17'" apk-badging.txt
-          grep -q "versionName='1.16'" apk-badging.txt
+          grep -q "versionCode='18'" apk-badging.txt
+          grep -q "versionName='1.17'" apk-badging.txt
           grep -Fxq "application-debuggable" apk-badging.txt
           python3 - <<'PY'
           import sys

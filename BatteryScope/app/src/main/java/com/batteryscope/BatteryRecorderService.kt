@@ -612,6 +612,7 @@ class BatteryRecorderService : Service() {
 
     override fun onDestroy() {
         recorderRunning = false
+        ShellChargingDiagnostics.disable()
         chargerLabels.boundary()
         if (activeRecorder === this) activeRecorder = null
         notificationHandler.removeCallbacksAndMessages(null)

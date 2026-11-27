@@ -434,6 +434,7 @@ class MainActivity : Activity() {
         lines += "Android battery optimisation exemption: " + if (power.isIgnoringBatteryOptimizations(packageName)) "yes" else "no — consider Battery optimisation settings if screen-off gaps persist"
         lines += "Current Android device idle / power saver: ${power.isDeviceIdleMode} / ${power.isPowerSaveMode}"
         lines += "A held wake lock does not prove the CPU stayed awake; sample export contains observed elapsed/uptime and policy state."
+        lines += "Shizuku server: " + ShellChargingDiagnostics.serverDescription()
         lines += "Shizuku charging diagnostics: " + ShellChargingDiagnostics.status
         lines += "Privileged readings are separate raw observations in history; not automatic electrical calibration."
         lines += "Process-local recorder health: " + BatteryRecorderService.liveHealthReport()
@@ -890,8 +891,8 @@ class MainActivity : Activity() {
                 "Shizuku charging diagnostics disabled"
             } else if (!rikka.shizuku.Shizuku.pingBinder()) {
                 "Start Shizuku first, then tap again"
-            } else if (rikka.shizuku.Shizuku.getUid() != 2000 || rikka.shizuku.Shizuku.isPreV11()) {
-                "Requires Shizuku ADB shell (UID 2000), not root"
+            } else if (rikka.shizuku.Shizuku.getUid() != 2000 || rikka.shizuku.Shizuku.isPreV11() || rikka.shizuku.Shizuku.getVersion() < 12) {
+                "Requires Shizuku v12+ ADB shell (UID 2000), not root"
             } else if (rikka.shizuku.Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
                 ShellChargingDiagnostics.enable(applicationContext)
             } else if (rikka.shizuku.Shizuku.shouldShowRequestPermissionRationale()) {
