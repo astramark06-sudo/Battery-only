@@ -5,13 +5,14 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 
-/** Resume permanent local monitoring after boot or an application update. */
+/** Resume local monitoring after boot or update, unless the user paused it. */
 class BatteryRecorderBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: return
         if (action != Intent.ACTION_BOOT_COMPLETED &&
             action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val prefs = context.getSharedPreferences(BatteryRecorderService.PREFS, Context.MODE_PRIVATE)
+        if (RecordingPreference.isPaused(prefs)) return
         try {
             // Do not open SQLite in a broadcast callback. The foreground service
             // initializes its worker and records the restart event itself.

@@ -15,6 +15,10 @@ internal data class MeasurementAssessment(
 )
 
 internal object BatteryMeasurementQuality {
+    // Broad rejection-only sanity bound for the target handset; not a calibrated operating limit.
+    // A value within the bound still does not establish correct firmware units or polarity.
+    private const val MAX_PLAUSIBLE_ABS_CURRENT_UA = 20_000_000L
+
     fun voltage(rawVoltageMv: Int?): MeasurementAssessment = when {
         rawVoltageMv == null -> MeasurementAssessment(false, "UNAVAILABLE")
         rawVoltageMv in 2_500..5_000 -> MeasurementAssessment(true, "AVAILABLE")
@@ -23,6 +27,11 @@ internal object BatteryMeasurementQuality {
 
     fun current(rawCurrentUa: Long?, batteryStatus: String, plugType: String): MeasurementAssessment {
         if (rawCurrentUa == null) return MeasurementAssessment(false, "UNAVAILABLE")
+        if (rawCurrentUa == Long.MIN_VALUE || rawCurrentUa == Long.MAX_VALUE ||
+            rawCurrentUa == Int.MIN_VALUE.toLong() || rawCurrentUa == Int.MAX_VALUE.toLong())
+            return MeasurementAssessment(false, "UNAVAILABLE_OR_SENTINEL")
+        if (rawCurrentUa !in -MAX_PLAUSIBLE_ABS_CURRENT_UA..MAX_PLAUSIBLE_ABS_CURRENT_UA)
+            return MeasurementAssessment(false, "OUT_OF_PLAUSIBLE_CURRENT_RANGE")
         if (rawCurrentUa == 0L) return MeasurementAssessment(false, "ZERO_OR_IDLE")
 
         val status = batteryStatus.uppercase(Locale.US).replace(' ', '_')

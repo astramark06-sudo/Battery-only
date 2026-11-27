@@ -1,5 +1,30 @@
 # BatteryScope — device-wide telemetry architecture and capability audit
 
+## 2026-11-25 — Charging-first scope (supersedes device-wide expansion)
+
+User requested charging analysis rather than unrelated device telemetry. New recordings and dashboard exclude app tracking, CPU/GPU inventory, general resource snapshots, network statistics and sensors. Remove PACKAGE_USAGE_STATS and ACCESS_NETWORK_STATE declarations; no Internet or privileged access. Only battery properties, charging/power-supply/USB-C role/thermal read-only observations, screen state for charging comparisons, and recorder health remain. Old sample/event columns and existing backup/CSV formats retained; no deletion, including historical resource and app records. Historical reporting helpers remain for compatibility tests; normal UI uses charging-focused report and suppresses counter-derived mA figures that could be mistaken for actual current. Explicitly distinguish advertised maxima, raw flags, actual charger input (unverified) and battery-side estimates. Realme evidence: user supplied old.csv (377 samples) and New.csv (13 samples), zero exported USB pairs or advertised limits in both; all 13 new counters equal SOC times 45000 µAh, raw voltage 3–4 mV, charging current -568 to -330 µA-labelled. No calibration or unsupported rescaling. Thermal zones are not assumed to be battery temperatures. Previous full cumulative CI 45484754741 passed. New Android CI and real-device validation required. No version/schema/signing change. No charging-control writes.
+ 
+## 2026-11-25 — Durable bounded UsageEvents import (R18 partial)
+
+- Prior checkpoint 5b38e8a93b021fd83708eaa4a3e2fc11d746e28d passed both Android jobs (build, JVM tests, APK inspection, lint, emulator) and signing policy: run 45483253766.
+- Import package-level foreground/background transition tuples on the existing slow inventory worker with optional Usage Access. At most 24-hour lookback, 15-minute forward chunks, two-minute settle/replay, four committed windows per pass; dense responses shrink rather than advance a partially read window. No activity names, screen content or network transfer. Dashboard disclosure describes optional access and local retention.
+- Store transitions and exclusive query checkpoint atomically in existing events table; retry deduplicates identical time/type/package tuples (cannot distinguish genuinely identical source events). Check current access before query/commit; stale concurrent checkpoint or revoked access rolls back the whole batch. Query coverage is not guaranteed, clock rollback/retention loss is labelled, no fake backfill. Existing live foreground estimates are separate.
+- Add JVM plan/boundary tests and disposable Android transaction, denial, duplicate, stale checkpoint and portable backup test. No schema/version/signing/permission changes. Android query behavior and app-usage aggregates, NetworkStatsManager, StorageStatsManager, and on-device performance remain open. New cumulative CI required.
+
+## 2026-11-25 — Bounded public resource inventory (R19 partial)
+
+- Extend low-cadence resource snapshots with display state and current mode configuration, storage volume state/type (no labels/UUIDs/paths), sensor descriptors (max 64, explicit truncation), ABI list, time-zone offset and acquisition completion timestamps. Descriptors are not live sensor measurements. Display configurations are not panel power.
+- Add only normal ACCESS_NETWORK_STATE permission for OS-reported active network transport/validation/metering snapshot. No INTERNET permission, active probes, SSID/BSSID, IP addresses, payload capture, persistent identifiers or sensor listeners. Connectivity snapshot can go stale immediately; event callbacks and Android system-history import are still pending.
+- Add disposable Android integration test for section statuses, acquisition timing, descriptor bounds and permission boundary. Full device census, per-app aggregate imports, capability ledger, storage overhead and real-device verification remain open. Additional descriptor storage requires measurement; no schema or backup format change, history deletion, signing or version change.
+
+## 2026-11-25 — Resource history summary
+
+Added 24-hour resource-history summary from stored acquisition timestamps: observed RAM range, minimum available internal storage, peak Android thermal status, and per-counter network bytes over valid intervals with explicit time coverage. Excludes repeated cached snapshots, unknown boot identity, resets, wall-clock discontinuities and gaps over five minutes. Historical device samples prior to this collector remain readable and are excluded as unavailable; no synthetic backfill or schema change. CI pending.
+
+## 2026-11-25 — Shared inventory and resource telemetry
+
+Unified dashboard and recorder hardware inventory via shared bounded read-only allowlist, full source paths in stored JSON, cached snapshots with acquisition timestamps. Added public Android RAM, internal storage, TrafficStats device/mobile/own UID cumulative bytes, power-save/idle/interactive/thermal status and headroom, processor count and sensor-type inventory. No extra permission, sensor streams, network transmission or schema/CSV changes. CPU/GPU frequency fields are raw optional sysfs only, not utilization. USB candidate requires online=1 and same power_supply source. Dashboard resource snapshot refreshes no faster than 60 s; recorder inventory cadence remains 120 s. Device support and monitoring overhead remain unverified. CI pending.
+
 Audit date: 2026-11-23  
 Target: Realme Narzo 20 Pro (RMX2161), Android 12, non-rooted  
 Package identity: `com.batteryscope`  

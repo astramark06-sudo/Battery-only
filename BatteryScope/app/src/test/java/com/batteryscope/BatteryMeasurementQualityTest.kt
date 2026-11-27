@@ -55,6 +55,19 @@ class BatteryMeasurementQualityTest {
     }
 
     @Test
+    fun rejectsSentinelsAndImplausibleCurrentWithoutGuessingScale() {
+        for (raw in listOf(Long.MIN_VALUE, Long.MAX_VALUE, Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong(),
+            -20_000_001L, 20_000_001L)) {
+            assertFalse(BatteryMeasurementQuality.current(raw, "CHARGING", "AC").usable)
+            assertFalse(BatteryMeasurementQuality.current(raw, "DISCHARGING", "NONE").usable)
+            assertNull(BatteryMeasurementQuality.batteryPowerW(3850, raw, "CHARGING", "AC"))
+        }
+        assertTrue(BatteryMeasurementQuality.current(20_000_000L, "CHARGING", "AC").usable)
+        assertTrue(BatteryMeasurementQuality.current(-20_000_000L, "DISCHARGING", "NONE").usable)
+        assertEquals("ZERO_OR_IDLE", BatteryMeasurementQuality.current(0L, "CHARGING", "AC").status)
+    }
+
+    @Test
     fun calculatesSignedBatterySidePowerOnlyFromValidatedInputs() {
         val result = BatteryMeasurementQuality.batteryPowerW(3_850, 2_000_000L, "CHARGING", "AC")
         assertNotNull(result)
